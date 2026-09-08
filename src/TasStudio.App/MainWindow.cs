@@ -59,7 +59,7 @@ public sealed partial class MainWindow : Window
         Content = BuildLayout();
         InitializeRecovery();
         _input.Configure(_settings);
-        _execution.LiveInput = () => _turboInput.Apply(_input.Read(), _execution.Position);
+        _execution.LiveInput = () => _execution.IsManualPlay ? _input.Read() : _turboInput.Apply(_input.Read(), _execution.Position);
         _execution.VideoReady += frame => Interlocked.Exchange(ref _pendingVideo, frame);
         _execution.AudioReady += _audio.Add;
         _execution.StatusChanged += message => Dispatcher.UIThread.Post(() => _status.Text = message);
@@ -122,14 +122,15 @@ public sealed partial class MainWindow : Window
         _empty.IsVisible = !_execution.IsLoaded;
         _viewport.IsVisible = _execution.IsLoaded;
         _position.Text = $"{(_execution.IsRunning ? "RUNNING" : _execution.IsLoaded ? "PAUSED" : "STOPPED")}   •   {PlaybackPositionText}";
+        _manualPosition.Text = _position.Text;
+        _manualPlayLabel.Text = _execution.IsRunning ? "Pause" : "Play";
         var input = _input.Read();
         _inputStatus.Text = $"Port 1 · {_input.DeviceStatus}\n{input.Buttons}   Stick {input.StickX},{input.StickY}   C {input.CStickX},{input.CStickY}   L/R {input.TriggerL}/{input.TriggerR}";
         if (_execution.HasProject && _execution.Revision != _savedRevision) _dirty = true;
-        _projectStatus.Text = _execution.HasProject ? $"{(_projectPath == null ? "Untitled project" : Path.GetFileName(_projectPath))}{(_dirty ? " • unsaved" : "")}   |   {_execution.PollBoundaries[^1]:N0} polls · {_execution.Inputs.Count:N0} frame groups" : "No project • create a project to record inputs";
+        _projectStatus.Text = _execution.HasProject ? $"{(_projectPath == null ? "Untitled project" : Path.GetFileName(_projectPath))}{(_dirty ? " • unsaved" : "")}   |   {_execution.PollBoundaries[^1]:N0} polls · {_execution.Inputs.Count:N0} frame groups" : _execution.IsManualPlay ? "PLAY · Live controller · Persistent memory card in Slot A" : "Open a game to play, or create a TAS project";
         Title = $"{ApplicationTitle}{(_execution.GamePath is { } game ? " — " + Path.GetFileNameWithoutExtension(game) : "")}{(_dirty ? " *" : "")}";
         foreach (var (control, enabled) in _availability) control.IsEnabled = !_busy && enabled();
-        RefreshTimeline();
-        RefreshInputEditorStatus();
+        if (!_execution.IsManualPlay) { RefreshTimeline(); RefreshInputEditorStatus(); }
         RefreshRecoveryStatus();
         RefreshWatcherStatus();
         _position.Text += _execution.IsPreviewCurrent ? "" : "  • Preview predates edit — seek to update";
@@ -140,16 +141,18 @@ public sealed partial class MainWindow : Window
         if (_bitmap == null || _bitmap.PixelSize.Width != frame.Width || _bitmap.PixelSize.Height != frame.Height)
         {
             _viewport.Source = null;
+            _manualViewport.Source = null;
             _bitmap?.Dispose();
             _bitmap = new(new PixelSize(frame.Width, frame.Height), new Vector(96, 96), PixelFormat.Rgba8888, AlphaFormat.Opaque);
-            _viewport.Source = _bitmap;
         }
+        _viewport.Source = _manualViewport.Source = _bitmap;
         using (var buffer = _bitmap.Lock())
         {
             var sourceStride = checked(frame.Width * BytesPerPixel);
             for (var y = 0; y < frame.Height; y++) Marshal.Copy(frame.Rgba, y * sourceStride, buffer.Address + y * buffer.RowBytes, sourceStride);
         }
         _viewport.InvalidateVisual();
+        _manualViewport.InvalidateVisual();
     }
 
     private async Task Perform(Func<Task> action)
@@ -188,6 +191,8 @@ public sealed partial class MainWindow : Window
         { e.Handled = true; GameHostWindow!.WindowState = _gameWindowRestoreState; return; }
         Func<Task>? command = null;
         if (e.Key == Key.O && e.KeyModifiers == KeyModifiers.Control) command = OpenGame;
+        else if (e.Key == Key.P && e.KeyModifiers == KeyModifiers.Control && _execution.IsManualPlay) command = ToggleRun;
+        else if (e.Key == Key.S && e.KeyModifiers == KeyModifiers.Control && _execution.IsManualPlay) command = SaveStateFile;
         else if (e.Key == Key.S && e.KeyModifiers == KeyModifiers.Control && _execution.HasProject) command = SaveProject;
         else if (e.Key == Key.Z && e.KeyModifiers == KeyModifiers.Control && _execution.HasProject) command = _execution.UndoAsync;
         else if (e.Key == Key.Y && e.KeyModifiers == KeyModifiers.Control && _execution.HasProject) command = _execution.RedoAsync;

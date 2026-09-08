@@ -7,6 +7,7 @@ public sealed partial class MainWindow
         get
         {
             var seconds = (long)Math.Round(_execution.ElapsedSeconds, MidpointRounding.AwayFromZero);
+            if (_execution.IsManualPlay) return $"Time: {seconds / 3600:00}:{seconds / 60 % 60:00}:{seconds % 60:00} | Frame: {_execution.VideoFieldCount:N0}";
             return $"Time: {seconds / 3600:00}:{seconds / 60 % 60:00}:{seconds % 60:00} | Frame: {_execution.VideoFieldCount:N0} | Poll: {CurrentPollPosition:N0}";
         }
     }

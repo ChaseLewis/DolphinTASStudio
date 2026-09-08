@@ -103,6 +103,7 @@ public sealed partial class MainWindow
     {
         if (_closingWorkspace) return;
         ShowEditor();
+        if (_execution.IsManualPlay) return;
         var panel = _dockFactory.Panels[id];
         if (!WorkspaceFactory.Walk(_dockRoot).Contains(panel))
         {

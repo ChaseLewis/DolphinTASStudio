@@ -47,6 +47,14 @@ Saving a folder project persists retained checkpoint references and state files.
 
 ## Configuration identity and history
 
+Play mode uses a persistent, separate profile with a raw Slot A card per region
+and size. Importing a card sets `MemoryCardSizeOverride` (0–4 for 59–1019 blocks;
+omitted for 2043 blocks). That value travels with states and project baselines and
+enters the configuration fingerprint when present. The Libretro-specific
+`0003-play-memory-card-size.patch` allows it to be loaded from Studio's isolated
+INI; normal Dolphin builds retain their original policy. Experiment profiles create
+the matching size before state restore. Loading a state rewinds card contents too.
+
 The validated configuration expands defaults and hashes a canonical sorted option map plus Start UTC. A separate configuration identity includes that fingerprint, native host binary hash, system resources and app-owned local GameSettings contents. The history root combines settings/environment identity with the existing ROM/core identity, input contract and baseline identity. Ordered inputs and execution events extend the existing prefix hash chain. Checkpoint retention settings and UI preferences do not affect that root.
 
 This is **requested configuration plus dependency identity**, not effective runtime readback. The pinned core hash covers compiled defaults, and resource hashes cover bundled compatibility data. The actual selected GPU/driver and resolved setting provenance are not currently read back. Do not label the frontend option dictionary as a verified effective profile.

@@ -8,6 +8,7 @@ internal static class CSharpWorkspace
     {
         sourceProject = Path.GetFullPath(sourceProject); destination = Path.GetFullPath(destination);
         if (!File.Exists(sourceProject)) throw new FileNotFoundException("Select a saved Studio project.", sourceProject);
+        var capturedStart = FolderProject.Load(sourceProject).Archive.Metadata.Start?.Kind is ProjectStartKind.SaveState or ProjectStartKind.CapturedState;
         if (Directory.Exists(destination)) throw new IOException("Choose a new workspace folder. Existing workspaces are preserved.");
         Directory.CreateDirectory(destination);
         var sdkDirectory = AppContext.BaseDirectory;
@@ -25,7 +26,8 @@ internal static class CSharpWorkspace
             .Replace("PulseExperiment", "Experiment");
         File.WriteAllText(Path.Combine(destination, "Experiment.cs"), template);
         ExperimentFiles.Write(Path.Combine(destination, "experiment.tascsharp.json"), new CSharpExperimentFile("Experiment", sourceProject,
-            "Experiments.csproj", "Experiments", "Experiment", Parameters: JsonSerializer.SerializeToElement(new { })));
+            "Experiments.csproj", "Experiments", "Experiment", Start: capturedStart ? ExperimentStart.SaveState : ExperimentStart.Boot,
+            StateId: capturedStart ? ExperimentStates.ProjectStart : null, Parameters: JsonSerializer.SerializeToElement(new { })));
         ExperimentFiles.Write(Path.Combine(destination, ".vscode", "settings.json"), new Dictionary<string, object>
         { ["tasStudio.workerPath"] = Path.Combine(sdkDirectory, "TasStudio.Worker.exe") });
         ExperimentFiles.Write(Path.Combine(destination, ".vscode", "extensions.json"), new { recommendations = new[] { "ms-dotnettools.csharp", "tas-studio.experiments" } });
@@ -39,6 +41,8 @@ internal static class CSharpWorkspace
             Initialize receives only trial metadata; RunAsync receives emulator capabilities.
             The example replays the frozen movie, then alternates A/neutral for 60 groups.
             It varies power-on UTC by trial index; a save-state start retains its saved clock.
+            For captured project baselines, the generated config uses Start: SaveState
+            and StateId: project-start. Boot explicitly restarts the game from power-on.
             Existing inputs are preserved by AdvanceAsync. SetCurrentInputAsync explicitly
             authors the current group when your algorithm takes over.
             Successful and cancelled trial folders are cleaned after their results commit;

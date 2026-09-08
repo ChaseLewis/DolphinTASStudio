@@ -17,7 +17,7 @@ public sealed partial class MainWindow
         set { _modalOpen = value; if (value) StopHeldAdvance(); UpdateInputAcceptance(); }
     }
 
-    private Window? GameHostWindow => TopLevel.GetTopLevel(_dockFactory.Panels["game"].View!) as Window;
+    private Window? GameHostWindow => _execution.IsManualPlay ? this : TopLevel.GetTopLevel(_dockFactory.Panels["game"].View!) as Window;
     private static bool IsEditingText(Window window)
     {
         var focused = window.FocusManager?.GetFocusedElement();
@@ -30,7 +30,7 @@ public sealed partial class MainWindow
         var active = _workspaceWindows.FirstOrDefault(window => window.IsActive);
         var keyboard = active != null && !IsEditingText(active);
         _input.SetAcceptInput(!_homeVisible && !_dialogOpen && !_closingApproved && active != null &&
-            (keyboard || UsesControllerInput), acceptKeyboard: keyboard);
+            (keyboard || UsesControllerInput || _execution.IsManualPlay), acceptKeyboard: keyboard);
     }
 
     private bool TryMoveTimelineCursor(Window window, KeyEventArgs e)
@@ -68,6 +68,7 @@ public sealed partial class MainWindow
 
     private void ToggleGameWindow()
     {
+        if (_execution.IsManualPlay) return;
         if (_dialogOpen || _closingApproved) return;
         ShowWorkspacePanel("game");
         var panel = _dockFactory.Panels["game"];
@@ -84,6 +85,12 @@ public sealed partial class MainWindow
     private void ToggleGameFullscreen()
     {
         if (_dialogOpen || _closingApproved) return;
+        if (_execution.IsManualPlay)
+        {
+            if (WindowState == WindowState.FullScreen) WindowState = _gameWindowRestoreState;
+            else { _gameWindowRestoreState = WindowState; WindowState = WindowState.FullScreen; }
+            return;
+        }
         ShowWorkspacePanel("game");
         if (_dockFactory.FindRoot(_dockFactory.Panels["game"]) == _dockRoot)
             _dockFactory.FloatDockable(_dockFactory.Panels["game"]);
