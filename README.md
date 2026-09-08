@@ -89,18 +89,45 @@ The **Create GitHub release** workflow builds and publishes a permanent, version
 Windows x64 release on demand. Once the workflow exists on the repository's default
 branch, open **Actions**, select that workflow, choose **Run workflow**, and enter a
 SemVer version without `v`, such as `0.1.0`. Releases must be run from the default
-branch. You can optionally mark the release as a prerelease.
+branch. Select the matching update channel: **stable** (`0.2.0`), **beta**
+(`0.2.0-beta.1`), or **alpha** (`0.2.0-alpha.1`). Alpha and beta releases are marked
+as GitHub prereleases automatically.
 
 After the native build and tests pass, the workflow creates tag `v<version>`, generates
 release notes, and publishes the GitHub Release with these assets:
 
-- `Dolphin-TAS-Studio-<version>-win-x64.zip`
-- `Dolphin-TAS-Studio-<version>-win-x64.zip.sha256`
+- A Velopack `Setup.exe` installer and a `Portable.zip` distribution.
+- A full `.nupkg` update payload and `releases.win-x64-<channel>.json` feed.
+- `SHA256SUMS.txt` covering those assets.
 
 The ZIP contains the self-contained Studio and experiment worker, the pinned Dolphin
 core and system files, examples, licenses, and other runtime dependencies. The release
 asset remains available until the release is manually deleted. `TasStudio.App.exe`
 uses the Dolphin TAS Studio logo as its Windows application icon.
+
+### Automatic updates
+
+Release installations and release portable ZIPs check GitHub on launch, download a
+newer release from their own channel, and install it after Studio closes normally.
+**Options → Updates** controls automatic updates, lets you check manually or change
+channel, and offers **Restart to update** after a download. Restart uses the normal
+save prompt. Active Studio instances and experiment workers defer installation;
+the download remains ready for a later Studio session. Switching channels clears
+the queued update and never downgrades; wait for a newer release on that channel.
+
+Velopack supplies a stable `Dolphin TAS Studio.exe` launcher and `Update.exe` beside a
+managed `current` directory. Launch the top-level executable; keep the complete
+portable directory together. Studio, the worker, SDK, and native core update as a
+single package. Preferences, memory cards, recovery data and states remain under
+`%LOCALAPPDATA%/TasStudio`; keep your projects and experiment workspaces outside
+the installation directory. Each installation has its own update preferences.
+
+Existing plain ZIP builds need one manual installation/download of the first
+updater-enabled release. Development builds do not check for updates. Before 1.0,
+replay and save-state compatibility is preserved where practical but is not
+guaranteed; known changes should appear in release notes. Updates do not deliberately
+invalidate otherwise compatible recordings. See [release maintenance](docs/updates.md)
+for local packaging and verification.
 
 ### Where the executables and data live
 

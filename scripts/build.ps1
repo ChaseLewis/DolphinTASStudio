@@ -57,6 +57,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $corePath 'COPYING') -Destination (Join-Path $destination 'Dolphin-COPYING.txt')
         Copy-Item -LiteralPath (Join-Path $corePath 'LICENSES') -Destination $destination -Recurse -Force
         Copy-Item -LiteralPath (Join-Path $workspace 'licenses/Dock-LICENSE.txt') -Destination (Join-Path $destination 'LICENSES/Dock-LICENSE.txt')
+        Copy-Item -LiteralPath (Join-Path $workspace 'licenses/Velopack-LICENSE.txt') -Destination (Join-Path $destination 'LICENSES/Velopack-LICENSE.txt')
         New-Item -ItemType Directory -Force -Path (Join-Path $destination 'examples') | Out-Null
         # Ship C# source without bin/obj trees; SDK references resolve to this build.
         $csharpSource = Join-Path $workspace 'examples/csharp'

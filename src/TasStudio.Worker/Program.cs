@@ -8,6 +8,8 @@ internal static class Program
     {
         try
         {
+            // Includes the coordinator's lifetime and gaps between individual trials.
+            using var activity = TasStudio.Core.RuntimeActivity.Enter();
             if (args.Length == 1)
             {
                 var job = ExperimentFiles.Read<ExperimentJob>(Path.GetFullPath(args[0]));
