@@ -16,6 +16,7 @@ public sealed class DolphinBackend : IEmulatorBackend
     private const int RawMemoryCardDevice = 1;
     private const int NoExiDevice = 255;
     private nint _host;
+    private FileStream? _profileLease;
     private ulong _position;
     private ulong _lastVideoSequence;
     private VideoFrame? _preview;
@@ -51,28 +52,30 @@ public sealed class DolphinBackend : IEmulatorBackend
         Stop();
         Directory.CreateDirectory(options.SaveDirectory);
         var profileDirectory = Path.GetFullPath(options.SaveDirectory);
-        var configDirectory = Path.Combine(profileDirectory, "User", "Config");
-        if (configuration != null && Directory.Exists(configDirectory))
-        {
-            // Project settings define the profile; preserve residual INIs outside Dolphin's lookup paths.
-            // GameSettings compatibility overrides and memory-card storage remain in place.
-            if ((File.GetAttributes(configDirectory) & FileAttributes.ReparsePoint) != 0)
-                throw new InvalidDataException("The app-owned configuration directory cannot be a link.");
-            var archiveDirectory = Path.Combine(profileDirectory, "ArchivedConfig");
-            Directory.CreateDirectory(archiveDirectory);
-            Directory.Move(configDirectory, Path.Combine(archiveDirectory, Guid.NewGuid().ToString("N")));
-        }
-        Directory.CreateDirectory(configDirectory);
-        // This is exclusively the application's isolated profile; never the user's Dolphin profile.
-        File.WriteAllText(Path.Combine(configDirectory, "Dolphin.ini"),
-            $"[Core]\nCPUThread = False\nEnableCustomRTC = True\nCustomRTCValue = {configuration?.StartUtcSeconds ?? InitialRtcEpoch}\nSlotA = {RawMemoryCardDevice}\nSlotB = {NoExiDevice}\n[Interface]\nConfirmStop = False\n");
-        Identity = InspectIdentity(options);
-        ConfigurationIdentity = configuration == null ? null : ConfigurationHash(configuration, options);
-        _host = Native.tas_create(options.CorePath, options.SystemDirectory, options.SaveDirectory,
-            options.InternalResolution, options.DspHle ? 1 : 0);
-        if (_host == 0) throw new InvalidOperationException(Error());
+        // A persistent Play profile must never have two card writers.
+        _profileLease = new FileStream(Path.Combine(profileDirectory, "session.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         try
         {
+            var configDirectory = Path.Combine(profileDirectory, "User", "Config");
+            if (configuration != null && Directory.Exists(configDirectory))
+            {
+                // Project settings define the profile; preserve residual INIs outside Dolphin's lookup paths.
+                // GameSettings compatibility overrides and memory-card storage remain in place.
+                if ((File.GetAttributes(configDirectory) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException("The app-owned configuration directory cannot be a link.");
+                var archiveDirectory = Path.Combine(profileDirectory, "ArchivedConfig");
+                Directory.CreateDirectory(archiveDirectory);
+                Directory.Move(configDirectory, Path.Combine(archiveDirectory, Guid.NewGuid().ToString("N")));
+            }
+            Directory.CreateDirectory(configDirectory);
+            // This is exclusively the application's isolated profile; never the user's Dolphin profile.
+            File.WriteAllText(Path.Combine(configDirectory, "Dolphin.ini"),
+                $"[Core]\nCPUThread = False\nEnableCustomRTC = True\nCustomRTCValue = {configuration?.StartUtcSeconds ?? InitialRtcEpoch}\nSlotA = {RawMemoryCardDevice}\nSlotB = {NoExiDevice}\nMemoryCardSize = {configuration?.MemoryCardSizeOverride ?? -1}\n[Interface]\nConfirmStop = False\n");
+            Identity = InspectIdentity(options);
+            ConfigurationIdentity = configuration == null ? null : ConfigurationHash(configuration, options);
+            _host = Native.tas_create(options.CorePath, options.SystemDirectory, options.SaveDirectory,
+                options.InternalResolution, options.DspHle ? 1 : 0);
+            if (_host == 0) throw new InvalidOperationException(Error());
             if (configuration != null)
             {
                 foreach (var (key, value) in configuration.Options) Check(Native.tas_set_option(_host, key, value));
@@ -186,6 +189,7 @@ public sealed class DolphinBackend : IEmulatorBackend
     {
         if (_host != 0) Native.tas_destroy(_host);
         _host = 0; _position = 0; _lastVideoSequence = 0; _preview = null;
+        _profileLease?.Dispose(); _profileLease = null;
         AudioReady?.Invoke([], 0);
     }
     public void Dispose() => Stop();

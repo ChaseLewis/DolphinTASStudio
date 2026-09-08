@@ -77,7 +77,7 @@ native runtime and system resources.
 | `Headless` | Default true. False opens silent, read-only preview windows for active workers |
 | `TimeoutSeconds` | 1–86400, default 300; wall-clock limit for each worker process |
 | `Start` | `Boot` or `SaveState`; default `Boot` |
-| `StateId` | Required for SaveState; marker ID from the saved source project's `States` or `AutomaticCheckpoints` |
+| `StateId` | Required for SaveState; `project-start` for the embedded baseline, or a marker ID from the saved source project's `States` or `AutomaticCheckpoints` |
 | `StartUtcSeconds` | Optional default boot UTC; Initialize can override it |
 | `PrerollSeconds` | Replay recorded input until at least this much emulated time has passed; default 0 |
 | `PrerollGroups` | Replay this many recorded frame groups; default 0 |
@@ -85,7 +85,13 @@ native runtime and system resources.
 
 Choose seconds **or** groups for preroll, not both. Preroll fails if it runs past the
 recorded movie. A seconds limit stops at a group boundary, so it can overshoot slightly.
-`StateId` is a Studio marker ID, not a filename or numbered Dolphin slot. Use a
+Use `"Start": "SaveState", "StateId": "project-start"` to run an experiment from
+the embedded baseline of a project made from a manually captured `.tasstate`.
+The workspace generator selects this automatically for captured/save-state projects.
+`Boot` explicitly restarts from power-on and does not restore that fixture's progress.
+See [Play mode and fixture capture](../README.md#playing-by-hand-and-making-test-fixtures).
+
+Other `StateId` values are Studio marker IDs, not filenames or numbered Dolphin slots. Use a
 compatible Studio state; arbitrary standalone Dolphin state formats are not accepted.
 
 Parameter deserialization uses `System.Text.Json` defaults. Match property names and

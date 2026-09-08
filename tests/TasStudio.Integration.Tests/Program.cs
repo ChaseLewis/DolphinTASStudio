@@ -13,6 +13,11 @@ if (args.Length < 2) throw new ArgumentException("Usage: integration <rom> <outp
 var rom = Path.GetFullPath(args[0]);
 var output = Path.GetFullPath(args[1]);
 Directory.CreateDirectory(output);
+if (args.Contains("manual-play-create") || args.Contains("manual-play-restore"))
+{
+    await ManualPlay.Run(rom, output, args.Contains("manual-play-restore"));
+    return;
+}
 if (args.Contains("poll-create") || args.Contains("poll-restore"))
 {
     await PollPlayback.Run(rom, output, args.Contains("poll-restore"));

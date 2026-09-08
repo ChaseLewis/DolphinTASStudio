@@ -7,6 +7,11 @@ using TasStudio.Sdk;
 namespace TasStudio.Emulation;
 
 public enum ExperimentStart { Boot, SaveState }
+public static class ExperimentStates
+{
+    /// <summary>Reserved StateId for the embedded project baseline, without requiring a named marker.</summary>
+    public const string ProjectStart = "project-start";
+}
 public sealed record ExperimentTrial(string Name, JsonElement Parameters, long? StartUtcSeconds = null);
 public sealed record ExperimentDefinition(int Version, string Name,
     ExperimentStart Start, string? StateId, long? StartUtcSeconds, int Parallelism, int TimeoutSeconds, ExperimentTrial[] Trials,
@@ -91,7 +96,9 @@ public static class ExperimentWorker
             if (job.Start == ExperimentStart.SaveState)
             {
                 if (job.StartUtcSeconds != null) throw new InvalidDataException("Cannot change UTC when starting from a saved state.");
-                await execution.LoadMarkerAsync(job.StateId ?? throw new InvalidDataException("Missing start state."));
+                var stateId = job.StateId ?? throw new InvalidDataException("Missing start state.");
+                // LoadProjectAsync above has already restored the embedded baseline at group zero.
+                if (stateId != ExperimentStates.ProjectStart) await execution.LoadMarkerAsync(stateId);
                 await execution.ConfigureCheckpointsAsync(new(Enabled: false));
             }
             token.ThrowIfCancellationRequested();

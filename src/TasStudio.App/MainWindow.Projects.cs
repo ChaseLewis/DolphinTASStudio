@@ -83,6 +83,7 @@ public sealed partial class MainWindow
         if (_recentProjects.SelectedItem is not RecentProject p)
         {
             _projectDetails.Children.Add(new TextBlock { Text = "Start a new timeline", FontSize = 20 });
+            _projectDetails.Children.Add(ProjectButton("Play a game", OpenGame));
             _projectDetails.Children.Add(ProjectButton("New project", NewProject));
             _projectDetails.Children.Add(ProjectButton("Open existing project…", OpenProject));
             _projectDetails.Children.Add(ProjectButton("Recover inputs…", RecoverInputs)); return;
@@ -142,9 +143,11 @@ public sealed partial class MainWindow
     {
         _homeVisible = visible;
         _projectHome.IsVisible = _homeToolbar.IsVisible = visible;
-        _editorWorkspace.IsVisible = _editorToolbar.IsVisible = !visible;
+        _editorToolbar.IsVisible = !visible;
+        _editorWorkspace.IsVisible = !visible && !_execution.IsManualPlay;
+        _manualWorkspace.IsVisible = !visible && _execution.IsManualPlay;
         _position.IsVisible = !visible;
-        if (visible)
+        if (visible || _execution.IsManualPlay)
         {
             foreach (var window in _workspaceWindows.Where(w => w != this && w.IsVisible).ToArray())
             { _homeHiddenWindows.Add(window); window.Hide(); }

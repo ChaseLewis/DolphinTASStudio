@@ -1,4 +1,14 @@
 function Install-CorePatches([string]$CorePath, [string]$PatchDirectory) {
+    Install-BaseCorePatches $CorePath $PatchDirectory
+    $playPatch = Join-Path $PatchDirectory '0003-play-memory-card-size.patch'
+    & git -C $CorePath apply --reverse --check $playPatch 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Invoke-Checked git @('-C', $CorePath, 'apply', '--check', $playPatch)
+        Invoke-Checked git @('-C', $CorePath, 'apply', $playPatch)
+    }
+}
+
+function Install-BaseCorePatches([string]$CorePath, [string]$PatchDirectory) {
     $basePatch = Join-Path $PatchDirectory '0001-tas-contract.patch'
     $tracePatch = Join-Path $PatchDirectory '0002-tas-trace.patch'
     & git -C $CorePath apply --reverse --check $tracePatch 2>$null

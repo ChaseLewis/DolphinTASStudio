@@ -21,6 +21,7 @@ BIOS files, save data, or game-derived trace captures are included.
 
 - [Build and run](#build-and-run)
 - [Editing a TAS](#editing-a-tas)
+- [Playing by hand and making test fixtures](#playing-by-hand-and-making-test-fixtures)
 - [C# experiments](#c-experiments)
 - [Builds with and without tracing](#builds-with-and-without-tracing)
 - [Experiment authoring guide and AI contract](docs/csharp-experiments.md)
@@ -37,6 +38,7 @@ BIOS files, save data, or game-derived trace captures are included.
 | Input editor | Interactive sticks, numeric axes, trigger pressure, controller input, alternating-frame turbo |
 | Timeline | Poll-based ruler, frame-group selections, alternative takes, visual tags, seek, undo/redo |
 | Projects | ROM identity/relocation, editable settings and start UTC, disk-backed states/checkpoints, saves and recovery |
+| Play mode | Direct keyboard/XInput play, persistent Slot A memory cards, raw card import/export, independent save-state files |
 | Memory watcher | Grouped watches, typed display, pointer offsets, double-click editing, Dolphin Memory Engine `.dmw` import |
 | Experiments | C# class libraries, pre-boot initialization, immutable original movie, up to four isolated workers |
 | Results | Per-experiment typed SQLite columns, JSONB nested values, serialized writes, batch resume, failed-trial diagnostics |
@@ -128,6 +130,59 @@ Changes apply immediately and are saved for the application, independently of pr
 settings. To customize colors, edit the embedded
 [palette file](src/TasStudio.App/Themes/palettes.json) and rebuild; see
 [UI themes](docs/ui-themes.md). Timeline input and marker colors stay consistent.
+
+## Playing by hand and making test fixtures
+
+Choose **Play a game** on the home screen or **File → Play Game** (`Ctrl+O`).
+The game starts with your mapped keyboard or XInput controller in a simple game view.
+Use **Controllers** to configure input and **Config** to change emulation settings.
+Play does not create a project, record inputs, or accumulate automatic checkpoints.
+Creating or opening a TAS project switches back to the editor.
+
+| Control | Play mode behavior |
+| --- | --- |
+| Ctrl+P / Play / Pause | Run with live input, or pause |
+| Escape | Leave fullscreen first, then pause |
+| F11 / F10 | Advance with current controller input / neutral input |
+| Ctrl+S / Save state | Pause and save a named `.tasstate` file |
+| Shift+F1–F8 | Save a quick slot; continue playing if already running |
+| F1–F8 | Load a quick slot and pause |
+| Alt+Enter | Toggle fullscreen |
+| Stop game | Shut down and flush memory card writes |
+
+Save normally **inside the game** to use the persistent raw memory card in **Slot A**.
+Play uses its own profile under the app's data folder at `Play/DolphinUser/User/GC/`;
+TAS projects and experiment workers use isolated profiles. Slot B and individual
+`.gci` save import are not exposed in this workflow.
+
+**Memory cards…** lets you choose USA, EUR or JAP and import/export a `.raw` card
+(59, 123, 251, 507, 1019 or 2043 blocks). Import copies the selected file and restarts
+the game; any replaced card is retained alongside it as a uniquely named `.bak`.
+Export flushes Dolphin's card writer, copies the card, and restores your paused
+position. Cards are separate by region and size. Match the region to your game.
+The dialog shows the active file path; an unused region may have no card to export.
+
+A **save state includes the memory card contents**. Loading an older state also
+rewinds that card, which will then persist to disk. Export the card first if you
+want to keep both versions of your in-game saves. Play quick slots are separate
+from TAS quick slots. States retain game/build identity, emulation settings and
+card size; they require a compatible Studio build.
+
+To build a reusable automation suite:
+
+1. Play to a useful situation and save a descriptively named `.tasstate`, such as
+   `before-battle.tasstate`. Repeat for each scenario.
+2. Create a **New Project**, choose the same game, and select that save state as
+   the starting point. Each project embeds its baseline and starts at group zero.
+3. Save one project per scenario, then use its `.tasproj` as `SourceProject` in a
+   C# experiment workspace. The worker restores the baseline and card into its
+   own profile. The original `.tasstate` and Play card are not required at runtime.
+   The generated config uses `"Start": "SaveState", "StateId": "project-start"`;
+   keep those values to test the captured situation. `Boot` starts from power-on.
+
+The card-size support requires rebuilding the native core; `-SkipNative` alone
+cannot apply the new core patch. A changed core identity means states made with
+older builds must be recreated for that build.
 
 ## Editing a TAS
 
@@ -342,6 +397,16 @@ node scripts/verify-resume.cjs 'D:/TAS/My run/movie.tasproj' 'artifacts/resume-c
 The last command uses SQLite support in Node.js 22.14+ and creates a fresh test batch.
 Historical verification documents under `docs/` describe specific development runs;
 ignored artifacts mentioned there are not shipped and are not current test results.
+
+The manual-play integration check uses a locally supplied USA-region GameCube image
+and a fresh output folder. It creates three independent states, imports/exports a
+59-block card, converts each state to a project baseline, and compares full RAM and
+card bytes again in a fresh process:
+
+```powershell
+dotnet run --project tests/TasStudio.Integration.Tests -c Release -- 'D:/Games/game.iso' artifacts/play-check manual-play-create
+dotnet run --project tests/TasStudio.Integration.Tests -c Release --no-build -- 'D:/Games/game.iso' artifacts/play-check manual-play-restore
+```
 
 | Directory | Purpose |
 | --- | --- |

@@ -22,7 +22,8 @@ public sealed partial class ExecutionService : IDisposable
     private string _gameHash = "";
     private volatile bool _running, _loaded, _hasProject;
     private volatile bool _playbackOnly;
-    public bool IsRecordingLive => _running && !_playbackOnly;
+    public bool IsRecordingLive => _running && _hasProject && !_playbackOnly;
+    public bool IsManualPlay => _loaded && !_hasProject;
     private int _disposed;
     private long _position;
     private long _videoFieldCount;
@@ -56,7 +57,7 @@ public sealed partial class ExecutionService : IDisposable
     public Task<SessionConfiguration?> GetConfigurationAsync() => Enqueue(() =>
         _loaded && _options != null ? new SessionConfiguration(_options with { Configuration = _options.Configuration?.ValidatedCopy() }, _backend.Identity) : null);
     public Task StopAsync() { InterruptSeek(); return Enqueue(() => { Pause(); _backend.Stop(); ClearProject(); _loaded = false; GamePath = null; Notify("Stopped"); }); }
-    public Task RunAsync() => Enqueue(() => { RequireLoaded(); EnsureCurrent(); _playbackOnly = false; _running = true; Notify("Recording live input at timeline end"); });
+    public Task RunAsync() => Enqueue(() => { RequireLoaded(); EnsureCurrent(); _playbackOnly = false; _running = true; Notify(_hasProject ? "Recording live input at timeline end" : "Playing with live controller input"); });
     public Task PlayRecordedAsync() => Enqueue(() =>
     {
         RequireProject(); EnsureCurrent(); _playbackOnly = true;

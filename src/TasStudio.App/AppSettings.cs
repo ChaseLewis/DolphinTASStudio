@@ -20,6 +20,7 @@ public static class AppPaths
     public static readonly string Settings = Path.Combine(Data, "settings.json");
     public static readonly string States = Path.Combine(Data, "States");
     public static readonly string DolphinUser = Path.Combine(Data, "DolphinUser");
+    public static readonly string PlayUser = Path.Combine(Data, "Play", "DolphinUser");
     public static readonly string Core = Path.Combine(AppContext.BaseDirectory, "native", "dolphin_libretro.dll");
     public static readonly string System = Path.Combine(AppContext.BaseDirectory, "system");
 }
@@ -47,6 +48,7 @@ public sealed class AppSettings
     public bool InvertStickY { get; set; }
     public bool InvertCStickY { get; set; }
     public string? LastGame { get; set; }
+    public TasStudio.Emulation.EmulationConfiguration PlayConfiguration { get; set; } = new();
     public bool WatcherVisible { get; set; }
     public double InspectorWidth { get; set; } = 330;
     public double TimelineHeight { get; set; } = 320;
@@ -90,6 +92,7 @@ public sealed class AppSettings
             settings.GamepadButtons ??= DefaultGamepadButtons();
             settings.GamepadBindings ??= [];
             settings.ResolvedRoms ??= [];
+            settings.PlayConfiguration = (settings.PlayConfiguration ?? new()).ValidatedCopy();
             settings.RecentProjects = (settings.RecentProjects ?? []).Where(p => p != null && !string.IsNullOrWhiteSpace(p.Path)).Take(50).ToList();
             settings.InspectorWidth = Math.Clamp(settings.InspectorWidth, 300, 550);
             settings.TimelineHeight = Math.Clamp(settings.TimelineHeight, 230, 600);

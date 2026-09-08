@@ -1,0 +1,19 @@
+diff --git a/Source/Core/Core/ConfigLoaders/BaseConfigLoader.cpp b/Source/Core/Core/ConfigLoaders/BaseConfigLoader.cpp
+--- a/Source/Core/Core/ConfigLoaders/BaseConfigLoader.cpp
++++ b/Source/Core/Core/ConfigLoaders/BaseConfigLoader.cpp
+@@ -166,6 +166,15 @@ public:
+         for (const auto& value : section_map)
+         {
+           const Config::Location location{system.first, section_name, value.first};
++#ifdef __LIBRETRO__
++          // Studio carries card size in fixture configuration. Fresh isolated
++          // profiles must create the same card size before restoring a state.
++          if (location == Config::MAIN_MEMORY_CARD_SIZE.GetLocation())
++          {
++            layer->Set(location, value.second);
++            continue;
++          }
++#endif
+           const bool load_disallowed = std::ranges::any_of(
+               s_setting_disallowed, [&location](const auto* l) { return *l == location; });
+           if (load_disallowed)

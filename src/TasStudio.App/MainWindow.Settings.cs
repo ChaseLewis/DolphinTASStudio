@@ -25,7 +25,7 @@ public sealed partial class MainWindow
         layout.Children.Add(new StackPanel { Spacing = 6, Margin = new Thickness(0,0,0,16), Children =
         {
             new TextBlock { Text = "Configuration", FontSize = 25, FontWeight = FontWeight.SemiBold },
-            SettingsNote(_execution.HasProject ? $"{Path.GetFileName(_projectPath ?? "Untitled project")} · emulation and checkpoints are saved with this project" : "Open or create a project to edit emulation settings.")
+            SettingsNote(_execution.HasProject ? $"{Path.GetFileName(_projectPath ?? "Untitled project")} · emulation and checkpoints are saved with this project" : _execution.IsManualPlay ? "Play settings · applying changes restarts the game with your persistent memory card" : "Open a game or project to edit emulation settings.")
         } });
         var editors = new Dictionary<string, ComboBox>();
         var pages = new Dictionary<string, StackPanel>();
@@ -62,18 +62,19 @@ public sealed partial class MainWindow
         void EnableCheckpointControls() { foreach (var control in new Control[] { interval, count, budget, retention }) control.IsEnabled = enabled.IsChecked == true; }
         enabled.IsCheckedChanged += (_, _) => EnableCheckpointControls(); EnableCheckpointControls();
         var projectTabs = pages.Select(p => SettingsTab(p.Key, p.Value)).Append(SettingsTab("Checkpoints", checkpointPage)).ToArray();
-        foreach (var tab in projectTabs) tab.IsEnabled = _execution.HasProject;
+        foreach (var tab in projectTabs) tab.IsEnabled = _execution.IsLoaded && (!Equals(tab.Header, "Checkpoints") || _execution.HasProject);
         var interfaceTab = SettingsTab("Interface", BuildInterfaceSettings(_settings, _settings.Save));
         var tabItems = projectTabs.Append(interfaceTab).ToArray();
         var tabs = new TabControl { Name = "ConfigurationTabs", ItemsSource = tabItems, SelectedIndex = _execution.HasProject ? selectedTab : projectTabs.Length };
         Grid.SetRow(tabs, 1); layout.Children.Add(tabs);
         var replay = new CheckBox { Content = "After an emulation change, replay to selected input", IsChecked = true, IsEnabled = _execution.HasProject };
-        var note = SettingsNote("Emulation changes restart from boot with a new baseline, preserve inputs/events, and remove existing state markers. Checkpoint settings apply without a restart.");
+        var note = SettingsNote(_execution.IsManualPlay ? "Apply restarts Play from boot. Save a state first to keep the current position. Memory cards persist." : "Emulation changes restart from boot with a new baseline, preserve inputs/events, and remove existing state markers. Checkpoint settings apply without a restart.");
+        replay.IsVisible = _execution.HasProject;
         var footer = new StackPanel { Spacing = 8, Margin = new Thickness(0,12,0,0), Children = { replay, note } };
         Grid.SetRow(footer, 2); layout.Children.Add(footer);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 10, Margin = new Thickness(0,12,0,0) };
         var cancel = new Button { Content = "Cancel" }; cancel.Click += (_, _) => dialog.Close(false);
-        var apply = new Button { Content = "Apply to project", IsEnabled = _execution.HasProject };
+        var apply = new Button { Content = _execution.IsManualPlay ? "Apply & restart Play" : "Apply to project", IsEnabled = _execution.IsLoaded };
         bool replayAfterApply = false, applying = false;
         dialog.Closing += (_, e) => { if (applying) e.Cancel = true; };
         apply.Click += async (_, _) =>
@@ -84,15 +85,21 @@ public sealed partial class MainWindow
                     throw new InvalidDataException("Enter UTC as yyyy-MM-dd HH:mm:ss.");
                 var values = new SortedDictionary<string,string>(StringComparer.Ordinal);
                 foreach (var setting in EmulationConfiguration.Settings) values.Add(setting.Key, setting.Values[editors[setting.Key].SelectedIndex]);
-                var next = new EmulationConfiguration { StartUtcSeconds = start.ToUnixTimeSeconds(), Options = values }.ValidatedCopy();
+                var next = (original with { StartUtcSeconds = start.ToUnixTimeSeconds(), Options = values }).ValidatedCopy();
                 var nextPolicy = new CheckpointPolicy(enabled.IsChecked == true, (int)interval.Value!, (int)count.Value!, (CheckpointRetention)retention.SelectedIndex, (int)budget.Value!);
                 nextPolicy.Validate();
                 applying = true;
                 apply.IsEnabled = cancel.IsEnabled = tabs.IsEnabled = false; note.Text = "Applying project settings…";
                 var emulationChanged = next.Fingerprint != original.Fingerprint;
-                if (emulationChanged) await WithGameLoading(() => _execution.ApplyConfigurationAsync(next, nextPolicy), dialog);
+                if (_execution.IsManualPlay)
+                {
+                    if (emulationChanged) await WithGameLoading(() => _execution.LoadPlayGameAsync(_execution.GamePath!, options with
+                    { Configuration = next, InternalResolution = next.Resolution, DspHle = next.DspHle }), dialog);
+                    await RememberPlayConfiguration();
+                }
+                else if (emulationChanged) await WithGameLoading(() => _execution.ApplyConfigurationAsync(next, nextPolicy), dialog);
                 else await _execution.ConfigureCheckpointsAsync(nextPolicy);
-                replayAfterApply = emulationChanged && replay.IsChecked == true;
+                replayAfterApply = _execution.HasProject && emulationChanged && replay.IsChecked == true;
                 applying = false;
                 dialog.Close(true);
             }

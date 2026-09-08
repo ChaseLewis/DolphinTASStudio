@@ -292,6 +292,33 @@ public sealed class CSharpExperimentTests
     private static ExperimentJob Job(TestWorkspace files, string source, ExperimentStart start) => new("C# test", source,
         files.Options.CorePath, files.Options.SystemDirectory, files.FilePath("run"), start, "missing", null,
         JsonSerializer.SerializeToElement(new { }), 10, 0, 1);
+    [Fact]
+    public async Task ManualFixtureBaselineStartsExperimentWithoutPowerOnOrNamedMarker()
+    {
+        using var files = new TestWorkspace(); using var source = new ExecutionService(new FakeBackend());
+        await source.LoadPlayGameAsync(files.GamePath, files.Options);
+        await source.AdvanceFrameAsync(ControllerState.Neutral with { Buttons = PadButtons.Start });
+        var expected = await source.ReadMemoryAsync(0x80000000, 4);
+        var state = files.FilePath("fixture.tasstate"); await source.SaveStateAsync(state);
+        var project = files.FilePath("fixture/test.tasproj");
+        await source.CreateProjectAsync(project, files.GamePath, files.Options, state);
+        File.Delete(state);
+        using var execution = new ExecutionService(new FakeBackend());
+        var result = await ExperimentWorker.RunAsync(Job(files, project, ExperimentStart.SaveState) with { StateId = ExperimentStates.ProjectStart }, execution,
+            CancellationToken.None, new DelegateExperiment
+            {
+                Init = context => { Assert.Equal(ExperimentStartingPoint.SaveState, context.StartingPoint); return new(); },
+                Run = async (ctx, _) =>
+                {
+                    Assert.Equal(0UL, (await ctx.Emulator.GetPositionAsync()).Group);
+                    Assert.Equal(expected, await execution.ReadMemoryAsync(0x80000000, 4));
+                    Assert.Empty(await ctx.Emulator.GetStatesAsync());
+                    return null;
+                }
+            });
+        Assert.Equal("completed", result.Status);
+        Assert.Empty(FolderProject.Load(project).Archive.Metadata.Inputs);
+    }
     private static async Task<string> Source(TestWorkspace files)
     {
         using var source = new ExecutionService(new FakeBackend()); await source.LoadGameAsync(files.GamePath, files.Options); await source.NewProjectAsync();

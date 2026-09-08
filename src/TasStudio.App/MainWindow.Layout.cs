@@ -23,9 +23,9 @@ public sealed partial class MainWindow
         var root = new Grid { RowDefinitions = new("Auto,Auto,*,Auto") };
         root.Children.Add(new Menu { ItemsSource = new[]
         {
-            new MenuItem { Header = "_File", ItemsSource = new Control[] { ActionMenu("Open Game…    Ctrl+O", OpenGame), ActionMenu("Projects", ShowProjects), ActionMenu("New Project", NewProject), ActionMenu("Open Project / Replay…", OpenProject), ActionMenu("Recover inputs…", RecoverInputs), ActionMenu("Save Project    Ctrl+S", SaveProject, Project), ActionMenu("Save Project As…", SaveProjectAs, Project), ActionMenu("Export Replay…", ExportReplay, Project) } },
+            new MenuItem { Header = "_File", ItemsSource = new Control[] { ActionMenu("Play Game…    Ctrl+O", OpenGame), ActionMenu("Projects", ShowProjects), ActionMenu("New Project", NewProject), ActionMenu("Open Project / Replay…", OpenProject), ActionMenu("Recover inputs…", RecoverInputs), ActionMenu("Save Project    Ctrl+S", SaveProject, Project), ActionMenu("Save Project As…", SaveProjectAs, Project), ActionMenu("Export Replay…", ExportReplay, Project) } },
             new MenuItem { Header = "_Emulation", ItemsSource = new Control[] { ActionMenu("Play / Pause", ToggleRun, Loaded), ActionMenu("Frame advance & keep input    F11", Step, Loaded), ActionMenu("Frame advance & clear    F10", StepNeutral, () => Loaded() && _execution.IsPreviewCurrent && _timeline.SelectedTake == null), ActionMenu("Play one recorded frame    F12", StepWithoutMovingSelection, () => Loaded() && _execution.HasProject && _execution.IsPreviewCurrent && _execution.Position < (ulong)_execution.Inputs.Count), ActionMenu("Pause    Escape", PausePlayback, Loaded), ActionMenu("Restart from start", RestartPlayback, Project), ActionMenu("Previous save state", PreviousState, Project), ActionMenu("Reset", Reset, Loaded), new Separator(), ActionMenu("Save State to File…", SaveStateFile, Loaded), ActionMenu("Load State from File…", LoadStateFile, Loaded), ActionMenu("Save Slot 1    Shift+F1", () => SaveSlot(1), Loaded), ActionMenu("Load Slot 1    F1", () => LoadSlot(1), Loaded) } },
-            new MenuItem { Header = "_Movie", ItemsSource = new Control[] { ActionMenu("Record live controller input", RecordLive, Loaded), new Separator(), ActionMenu("Undo    Ctrl+Z", _execution.UndoAsync, Project), ActionMenu("Redo    Ctrl+Y", _execution.RedoAsync, Project), ActionMenu("Copy Selection as Take", CopyTake, Project), ActionMenu("Save Named State", SaveNamedState, Project) } },
+            new MenuItem { Header = "_Movie", ItemsSource = new Control[] { ActionMenu("Record live controller input", RecordLive, Project), new Separator(), ActionMenu("Undo    Ctrl+Z", _execution.UndoAsync, Project), ActionMenu("Redo    Ctrl+Y", _execution.RedoAsync, Project), ActionMenu("Copy Selection as Take", CopyTake, Project), ActionMenu("Save Named State", SaveNamedState, Project) } },
             new MenuItem { Header = "_Options", ItemsSource = new[] { ActionMenu("Controllers…", ControllerSettings), ActionMenu("Configuration…", ApplicationSettings) } },
             new MenuItem { Header = "_View", ItemsSource = BuildViewMenu() }
         } });
@@ -34,7 +34,7 @@ public sealed partial class MainWindow
         toolbar.Children.Add(IconButton("Save", "save", SaveProject, Project));
         toolbar.Children.Add(ToolSeparator());
         toolbar.Children.Add(IconButton("Controllers", "pad", ControllerSettings)); toolbar.Children.Add(IconButton("Config", "config", ApplicationSettings));
-        toolbar.Children.Add(IconButton("Watches", "watch", () => { ToggleWatcher(); return Task.CompletedTask; })); toolbar.Children.Add(ToolSeparator());
+        toolbar.Children.Add(IconButton("Watches", "watch", () => { ToggleWatcher(); return Task.CompletedTask; }, () => !_execution.IsManualPlay)); toolbar.Children.Add(ToolSeparator());
         var soundIcon = new Grid { Width = 24, Height = 24 };
         soundIcon.Children.Add(new Avalonia.Controls.Shapes.Path
         {
@@ -86,6 +86,7 @@ public sealed partial class MainWindow
         var workspace = BuildDockWorkspace();
         Grid.SetRow(workspace, 2); root.Children.Add(workspace);
         _editorToolbar = toolbar; _editorWorkspace = workspace;
+        _manualWorkspace = BuildPlayWorkspace(); Grid.SetRow(_manualWorkspace, 2); root.Children.Add(_manualWorkspace);
         var homeTools = new WrapPanel { Margin = new Thickness(8, 4, 8, 7) };
         homeTools.Children.Add(IconButton("New project", "state", NewProject));
         homeTools.Children.Add(IconButton("Open project", "folder", OpenProject));
@@ -93,8 +94,8 @@ public sealed partial class MainWindow
         _cancelVerification.Click += (_, _) => _verificationCancellation?.Cancel();
         homeTools.Children.Add(_cancelVerification);
         homeTools.Children.Add(ToolSeparator());
-        homeTools.Children.Add(IconButton("Open game", "pad", OpenGame));
-        homeTools.Children.Add(IconButton("Resume editor", "play", () => { ShowEditor(); return Task.CompletedTask; }, () => _execution.HasProject));
+        homeTools.Children.Add(IconButton("Play a game", "pad", OpenGame));
+        homeTools.Children.Add(IconButton("Resume game / editor", "play", () => { ShowEditor(); return Task.CompletedTask; }, () => _execution.IsLoaded));
         _homeToolbar = homeTools; Grid.SetRow(homeTools, 1); root.Children.Add(homeTools);
         _projectHome = BuildProjectHome(); Grid.SetRow(_projectHome, 2); root.Children.Add(_projectHome);
         toolbar.IsVisible = workspace.IsVisible = false;

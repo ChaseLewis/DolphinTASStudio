@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace TasStudio.Emulation;
 
@@ -9,6 +10,9 @@ public sealed record CoreSetting(string Key, string Label, string Group, string 
 public sealed record EmulationConfiguration
 {
     public long StartUtcSeconds { get; init; } = 946684800;
+    // Omitted for the original 2043-block card, preserving existing fingerprints.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MemoryCardSizeOverride { get; init; }
     public SortedDictionary<string, string> Options { get; init; } = new(StringComparer.Ordinal);
     private static CoreSetting Toggle(string key, string label, string group, bool value) =>
         new("dolphin_" + key, label, group, value ? "enabled" : "disabled", ["disabled", "enabled"], ["Off", "On"]);
@@ -44,6 +48,7 @@ public sealed record EmulationConfiguration
     public string Value(string key) => Options.GetValueOrDefault(key) ?? Settings.Single(s => s.Key == key).Default;
     public EmulationConfiguration ValidatedCopy()
     {
+        if (MemoryCardSizeOverride is < 0 or > 4) throw new InvalidDataException("Invalid memory card size.");
         if (StartUtcSeconds is < 0 or > uint.MaxValue) throw new InvalidDataException("Start UTC must be between 1970 and February 2106.");
         if (Options == null || Options.Keys.Any(k => !Settings.Any(s => s.Key == k))) throw new InvalidDataException("Unknown project emulation setting.");
         var values = new SortedDictionary<string, string>(StringComparer.Ordinal);

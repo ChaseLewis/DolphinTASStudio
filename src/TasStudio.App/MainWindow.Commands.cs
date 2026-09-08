@@ -35,6 +35,7 @@ public sealed partial class MainWindow
     }
     private async Task OpenGame()
     {
+        await _execution.PauseAsync(); _audio.Flush();
         var path = await PickOpen("Open GameCube game", GameFiles);
         if (path == null) return;
         await _execution.PauseAsync(); _audio.Flush();
@@ -43,23 +44,23 @@ public sealed partial class MainWindow
     private async Task OpenGamePath(string path)
     {
         _status.Text = "Loading game…";
-        await WithGameLoading(async () =>
-        {
-            await _execution.LoadGameAsync(path, BackendOptions());
-            await _execution.NewProjectAsync(ProjectStartKind.PowerOn);
-        });
+        var config = _settings.PlayConfiguration.ValidatedCopy();
+        await WithGameLoading(() => _execution.LoadPlayGameAsync(path, BackendOptions() with
+        { SaveDirectory = AppPaths.PlayUser, Configuration = config, InternalResolution = config.Resolution, DspHle = config.DspHle }));
         _audio.Flush();
         _settings.LastGame = path; _settings.Save();
-        _projectPath = null; _dirty = true;
+        _projectPath = null; _dirty = false;
         DetachWatchDocument();
-        await BeginRecoverySession();
+        CloseRecoveryMarker();
         ShowEditor();
+        await _execution.RunAsync();
     }
     private async Task ToggleRun()
     {
         if (!_execution.IsLoaded) return;
         await FlushInputEditsAsync();
         if (_execution.IsRunning) { await _execution.PauseAsync(); _audio.Flush(); }
+        else if (_execution.IsManualPlay) await _execution.RunAsync();
         else await _execution.PlayRecordedAsync();
     }
     private async Task PausePlayback() { await _execution.PauseAsync(); _audio.Flush(); }
@@ -77,6 +78,7 @@ public sealed partial class MainWindow
     }
     private async Task Step()
     {
+        if (_execution.IsManualPlay) { _audio.Flush(); await _execution.AdvanceFrameAsync(_input.Read()); return; }
         await StepWithEditorInputAsync();
     }
     private async Task StepWithoutMovingSelection()
@@ -86,7 +88,7 @@ public sealed partial class MainWindow
         await _execution.StepRecordedFrameAsync();
         LoadSelectedInput();
     }
-    private Task StepNeutral() => StepWithEditorInputAsync(blankInput: true);
+    private Task StepNeutral() => _execution.IsManualPlay ? _execution.AdvanceFrameAsync(TasStudio.Core.ControllerState.Neutral) : StepWithEditorInputAsync(blankInput: true);
     private async Task RestartPlayback()
     {
         await FlushInputEditsAsync();
@@ -100,16 +102,17 @@ public sealed partial class MainWindow
         await _execution.PauseAsync(); _audio.Flush();
         await _execution.ResetAsync();
         _dirty = _execution.HasProject;
-        _status.Text = "Reset complete. In a project, reset is recorded as an ordered execution event.";
+        _status.Text = _execution.HasProject ? "Reset complete. Reset is recorded as an ordered execution event." : "Reset complete — Play is paused.";
     }
     private async Task SaveStateFile()
     {
         await _execution.PauseAsync(); _audio.Flush();
-        var path = await PickSave("Save TAS Studio state", StateFiles, $"state-{_execution.Position}.tasstate", "tasstate");
+        var path = await PickSave("Save TAS Studio state", StateFiles, $"{Path.GetFileNameWithoutExtension(_execution.GamePath)}-{DateTime.Now:yyyyMMdd-HHmmss-fff}-g{_execution.Position}.tasstate", "tasstate");
         if (path != null) { await _execution.SaveStateAsync(path); _status.Text = $"Saved state to {path}"; }
     }
     private async Task LoadStateFile()
     {
+        await _execution.PauseAsync(); _audio.Flush();
         var path = await PickOpen("Load compatible TAS Studio state", StateFiles);
         if (path != null) await RestoreState(path);
     }
@@ -117,15 +120,17 @@ public sealed partial class MainWindow
     {
         var gameName = Path.GetFileNameWithoutExtension(_execution.GamePath ?? "game");
         var identity = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(_execution.GamePath ?? "game").ToUpperInvariant())));
-        return Path.Combine(AppPaths.States, identity, $"{gameName}.slot{slot}.tasstate");
+        return Path.Combine(_execution.IsManualPlay ? Path.Combine(AppPaths.States, "Play") : AppPaths.States, identity, $"{gameName}.slot{slot}.tasstate");
     }
     private async Task SaveSlot(int slot)
     {
+        var resumePlay = _execution.IsManualPlay && _execution.IsRunning;
         await _execution.PauseAsync(); _audio.Flush();
         var path = SlotPath(slot);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await _execution.SaveStateAsync(path);
         _status.Text = $"Saved state in slot {slot}.";
+        if (resumePlay) await _execution.RunAsync();
     }
     private async Task LoadSlot(int slot)
     {
@@ -136,7 +141,13 @@ public sealed partial class MainWindow
     private async Task RestoreState(string path)
     {
         await _execution.PauseAsync(); _audio.Flush();
-        await _execution.LoadStateAsync(path);
+        if (_execution.IsManualPlay)
+        {
+            var options = (await _execution.GetConfigurationAsync())!.Options;
+            await WithGameLoading(() => _execution.LoadPlayGameAsync(_execution.GamePath!, options, path));
+            await RememberPlayConfiguration();
+        }
+        else await _execution.LoadStateAsync(path);
         if (!_execution.HasProject) { _projectPath = null; _dirty = false; }
         _status.Text = "State restored after compatibility and history validation.";
     }
