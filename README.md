@@ -33,6 +33,7 @@ BIOS files, save data, or game-derived trace captures are included.
 | Area | Capabilities |
 | --- | --- |
 | Workspace | Draggable, resizable, tabbed and floating game, timeline, input and memory panels; persistent layouts |
+| Appearance | Light, Dark and System themes; System by default; editable palette embedded at build time |
 | Input editor | Interactive sticks, numeric axes, trigger pressure, controller input, alternating-frame turbo |
 | Timeline | Poll-based ruler, frame-group selections, alternative takes, visual tags, seek, undo/redo |
 | Projects | ROM identity/relocation, editable settings and start UTC, disk-backed states/checkpoints, saves and recovery |
@@ -80,6 +81,19 @@ After native dependencies exist, rebuild managed code without recompiling Dolphi
 powershell.exe -NoProfile -File scripts/build.ps1 -SkipNative -Publish -PublishDirectory artifacts/prod
 ```
 
+### Downloadable GitHub build
+
+The **Build published Windows artifact** workflow creates the complete Windows x64
+distribution on demand. Once the workflow exists on the repository's default branch,
+open **Actions**, select that workflow, choose **Run workflow**, and select the branch
+and retention period. When it finishes, download
+`dolphin-tas-studio-win-x64-<run number>` from the run's **Artifacts** section.
+
+The artifact contains the self-contained Studio and experiment worker, the pinned
+Dolphin core and system files, examples, licenses, and other runtime dependencies.
+`TasStudio.App.exe` uses the Dolphin TAS Studio logo as its Windows application icon.
+The workflow is manually triggered and does not publish a GitHub Release.
+
 ### Where the executables and data live
 
 | Command | Executables | User data |
@@ -102,6 +116,12 @@ by Dolphin's JIT exception handling.
 
 If a build is in use, publish into a different directory instead of replacing its
 loaded DLLs. `-SkipNative` reuses existing binaries; it does not apply native changes.
+
+Choose **Config → Interface → UI theme** to switch between Light, Dark and System.
+Changes apply immediately and are saved for the application, independently of project
+settings. To customize colors, edit the embedded
+[palette file](src/TasStudio.App/Themes/palettes.json) and rebuild; see
+[UI themes](docs/ui-themes.md). Timeline input and marker colors stay consistent.
 
 ## Editing a TAS
 

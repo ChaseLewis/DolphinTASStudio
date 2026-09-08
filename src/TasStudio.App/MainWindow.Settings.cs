@@ -12,20 +12,20 @@ public sealed partial class MainWindow
 {
     private Task ApplicationSettings() => ApplicationSettingsCore(null);
     private Task CheckpointSettings() => ApplicationSettingsCore(null, 4);
-    private async Task ApplicationSettingsCore(string? capturePath, int selectedTab = 0)
+    internal async Task ApplicationSettingsCore(string? capturePath, int selectedTab = 0)
     {
         await _execution.PauseAsync(); _audio.Flush();
         var session = await _execution.GetConfigurationAsync();
         var options = session?.Options ?? BackendOptions();
         var original = (options.Configuration ?? EmulationConfiguration.FromLegacy(options.InternalResolution, options.DspHle)).ValidatedCopy();
         var policy = _execution.Checkpoints;
-        var dialog = new Window { Title = "Project configuration — Dolphin TAS Studio", Width = 830, Height = 720,
-            MinWidth = 720, MinHeight = 500, WindowStartupLocation = WindowStartupLocation.CenterOwner, Background = Brush.Parse("#15191F") };
+        var dialog = new Window { Title = "Configuration — Dolphin TAS Studio", Width = 830, Height = 720,
+            MinWidth = 720, MinHeight = 500, WindowStartupLocation = WindowStartupLocation.CenterOwner, Background = StudioTheme.Brush(ThemeColor.Window) };
         var layout = new Grid { RowDefinitions = new("Auto,*,Auto,Auto"), Margin = new Thickness(22) };
         layout.Children.Add(new StackPanel { Spacing = 6, Margin = new Thickness(0,0,0,16), Children =
         {
-            new TextBlock { Text = "Project configuration", FontSize = 25, FontWeight = FontWeight.SemiBold },
-            SettingsNote(_execution.HasProject ? $"{Path.GetFileName(_projectPath ?? "Untitled project")} · saved with this project" : "Open or create a project to edit its settings.")
+            new TextBlock { Text = "Configuration", FontSize = 25, FontWeight = FontWeight.SemiBold },
+            SettingsNote(_execution.HasProject ? $"{Path.GetFileName(_projectPath ?? "Untitled project")} · emulation and checkpoints are saved with this project" : "Open or create a project to edit emulation settings.")
         } });
         var editors = new Dictionary<string, ComboBox>();
         var pages = new Dictionary<string, StackPanel>();
@@ -61,8 +61,11 @@ public sealed partial class MainWindow
         checkpointPage.Children.Add(SettingsNote("Checkpoints and named states are stored on disk and included when you save the project. Reducing a limit trims the active cache immediately."));
         void EnableCheckpointControls() { foreach (var control in new Control[] { interval, count, budget, retention }) control.IsEnabled = enabled.IsChecked == true; }
         enabled.IsCheckedChanged += (_, _) => EnableCheckpointControls(); EnableCheckpointControls();
-        var tabItems = pages.Select(p => SettingsTab(p.Key, p.Value)).Append(SettingsTab("Checkpoints", checkpointPage)).ToArray();
-        var tabs = new TabControl { ItemsSource = tabItems, IsEnabled = _execution.HasProject, SelectedIndex = selectedTab };
+        var projectTabs = pages.Select(p => SettingsTab(p.Key, p.Value)).Append(SettingsTab("Checkpoints", checkpointPage)).ToArray();
+        foreach (var tab in projectTabs) tab.IsEnabled = _execution.HasProject;
+        var interfaceTab = SettingsTab("Interface", BuildInterfaceSettings(_settings, _settings.Save));
+        var tabItems = projectTabs.Append(interfaceTab).ToArray();
+        var tabs = new TabControl { Name = "ConfigurationTabs", ItemsSource = tabItems, SelectedIndex = _execution.HasProject ? selectedTab : projectTabs.Length };
         Grid.SetRow(tabs, 1); layout.Children.Add(tabs);
         var replay = new CheckBox { Content = "After an emulation change, replay to selected input", IsChecked = true, IsEnabled = _execution.HasProject };
         var note = SettingsNote("Emulation changes restart from boot with a new baseline, preserve inputs/events, and remove existing state markers. Checkpoint settings apply without a restart.");
@@ -96,6 +99,13 @@ public sealed partial class MainWindow
             catch (Exception ex) { applying = false; note.Text = ex.Message; apply.IsEnabled = cancel.IsEnabled = tabs.IsEnabled = true; }
         };
         actions.Children.Add(cancel); actions.Children.Add(apply); Grid.SetRow(actions,3); layout.Children.Add(actions); dialog.Content = layout;
+        void RefreshScope()
+        {
+            var interfaceSelected = tabs.SelectedItem == interfaceTab;
+            footer.IsVisible = apply.IsVisible = !interfaceSelected;
+            cancel.Content = interfaceSelected ? "Close" : "Cancel";
+        }
+        tabs.SelectionChanged += (_, _) => RefreshScope(); RefreshScope();
         if (capturePath != null) dialog.Opened += async (_, _) =>
         {
             var path = Path.GetFullPath(capturePath); Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -113,8 +123,35 @@ public sealed partial class MainWindow
         if (replayAfterApply) await SeekTo((ulong)Math.Min(_execution.Inputs.Count, _timeline.SelectedFrame));
     }
     private static TabItem SettingsTab(string title, Control content) => new() { Header = title, Content = new ScrollViewer { Content = content } };
+    internal static Control BuildInterfaceSettings(AppSettings settings, Action save)
+    {
+        var page = SettingsPage();
+        var theme = new ComboBox { Name = "UiTheme", ItemsSource = new[] { UiTheme.Light, UiTheme.Dark, UiTheme.System },
+            SelectedItem = settings.Theme, HorizontalAlignment = HorizontalAlignment.Stretch };
+        var note = SettingsNote("Applies immediately to all Studio windows. System follows your operating system's appearance.");
+        page.Children.Add(SettingsRow("UI theme", theme));
+        page.Children.Add(note);
+        theme.SelectionChanged += (_, _) =>
+        {
+            if (theme.SelectedItem is not UiTheme selected || selected == settings.Theme) return;
+            var previous = settings.Theme;
+            try
+            {
+                settings.Theme = selected;
+                save();
+                StudioTheme.Apply(selected);
+                note.Text = "Applies immediately to all Studio windows. System follows your operating system's appearance.";
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                settings.Theme = previous; theme.SelectedItem = previous;
+                note.Text = $"Theme could not be saved: {ex.Message}";
+            }
+        };
+        return page;
+    }
     private static StackPanel SettingsPage() => new() { Margin = new Thickness(0,18,12,10), Spacing = 13 };
-    private static TextBlock SettingsNote(string text) => new() { Text = text, TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#AEB9C8"), FontSize = 13 };
+    private static TextBlock SettingsNote(string text) => new() { Text = text, TextWrapping = TextWrapping.Wrap, Foreground = StudioTheme.Brush(ThemeColor.Muted), FontSize = 13 };
     private static Control SettingsRow(string label, Control editor)
     {
         var row = new Grid { ColumnDefinitions = new("240,*") };

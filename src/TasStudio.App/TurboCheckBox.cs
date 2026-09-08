@@ -9,7 +9,7 @@ namespace TasStudio.App;
 
 internal static class TurboCheckBox
 {
-    private static readonly IBrush Accent = Brush.Parse("#E7AF61");
+    private static readonly IBrush Accent = StudioTheme.Brush(ThemeColor.Accent);
     private static readonly Geometry Plus = Geometry.Parse("M4,0 H6 V4 H10 V6 H6 V10 H4 V6 H0 V4 H4 Z");
     private static readonly Geometry Minus = Geometry.Parse("M0,4 H10 V6 H0 Z");
 

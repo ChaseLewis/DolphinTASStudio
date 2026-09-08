@@ -1,7 +1,6 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Styling;
-using Avalonia.Themes.Fluent;
 
 namespace TasStudio.App;
 
@@ -16,9 +15,10 @@ public sealed class StudioApp : Application
 {
     public override void Initialize()
     {
-        RequestedThemeVariant = ThemeVariant.Dark;
-        Styles.Add(new FluentTheme());
+        RequestedThemeVariant = ThemeVariant.Default;
+        Styles.Add(StudioTheme.CreateFluentTheme());
         Styles.Add(new Dock.Avalonia.Themes.Fluent.DockFluentTheme());
+        StudioTheme.Initialize(this);
         DataTemplates.Add(new Avalonia.Controls.Templates.FuncDataTemplate<StudioPanel>((panel, _) => panel == null ? null : new StudioPanelPresenter(panel)));
     }
 

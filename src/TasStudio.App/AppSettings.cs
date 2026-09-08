@@ -40,6 +40,7 @@ public sealed class AppSettings
     public const int DefaultTriggerThreshold = 90;
     public int Volume { get; set; } = DefaultVolume;
     public bool Muted { get; set; }
+    public UiTheme Theme { get; set; } = UiTheme.System;
     public int GamepadIndex { get; set; } = -1;
     public int DeadZonePercent { get; set; } = DefaultDeadZone;
     public int TriggerClickPercent { get; set; } = DefaultTriggerThreshold;
@@ -72,13 +73,16 @@ public sealed class AppSettings
     };
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true, Converters = { new JsonStringEnumConverter() } };
     public static AppSettings Load(out string? warning)
+        => Load(AppPaths.Settings, out warning);
+    internal static AppSettings Load(string path, out string? warning)
     {
         warning = null;
-        if (!File.Exists(AppPaths.Settings)) return new();
+        if (!File.Exists(path)) return new();
         try
         {
-            var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(AppPaths.Settings), JsonOptions) ?? throw new InvalidDataException("Settings are empty.");
+            var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path), JsonOptions) ?? throw new InvalidDataException("Settings are empty.");
             settings.Volume = Math.Clamp(settings.Volume, 0, 100);
+            if (!Enum.IsDefined(settings.Theme)) settings.Theme = UiTheme.System;
             settings.GamepadIndex = Math.Clamp(settings.GamepadIndex, -1, 3);
             settings.DeadZonePercent = Math.Clamp(settings.DeadZonePercent, 0, 95);
             settings.TriggerClickPercent = Math.Clamp(settings.TriggerClickPercent, 1, 100);
@@ -98,10 +102,13 @@ public sealed class AppSettings
         }
     }
     public void Save()
+        => Save(AppPaths.Settings);
+    internal void Save(string path)
     {
-        Directory.CreateDirectory(AppPaths.Data);
-        var temporary = AppPaths.Settings + ".tmp";
+        path = Path.GetFullPath(path);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var temporary = path + ".tmp";
         File.WriteAllText(temporary, JsonSerializer.Serialize(this, JsonOptions));
-        File.Move(temporary, AppPaths.Settings, true);
+        File.Move(temporary, path, true);
     }
 }

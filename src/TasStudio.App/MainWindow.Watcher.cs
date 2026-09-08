@@ -38,7 +38,7 @@ public sealed partial class MainWindow
     private readonly HashSet<Guid> _expandedWatches = [];
     private readonly ObservableCollection<WatchRow> _watchRows = [];
     private readonly ListBox _watchList = new() { Background = Brushes.Transparent, BorderThickness = new Thickness(0) };
-    private readonly TextBlock _watchSampleLabel = new() { FontSize = 11, Foreground = Brushes.Gray, TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock _watchSampleLabel = new() { FontSize = 11, Foreground = StudioTheme.Brush(ThemeColor.Muted), TextWrapping = TextWrapping.Wrap };
     private Control? _watchView;
     private long _watchVersion, _watchRequestedGeneration = -1;
     private bool _watchSampling;

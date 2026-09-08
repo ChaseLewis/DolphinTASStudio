@@ -28,7 +28,7 @@ public sealed partial class MainWindow : Window
     private readonly AppSettings _settings;
     private readonly DispatcherTimer _timer = new() { Interval = UiRefreshInterval };
     private readonly Image _viewport = new() { Stretch = Stretch.Fill };
-    private readonly TextBlock _empty = new() { Text = "Open a GameCube game to begin", FontSize = 22, Foreground = Brushes.Gray, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock _empty = new() { Text = "Open a GameCube game to begin", FontSize = 22, Foreground = StudioTheme.Brush(ThemeColor.GamePlaceholder), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _status = new() { Text = "Ready", TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _position = new() { FontFamily = FontFamily.Parse("Consolas"), VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _inputStatus = new() { FontFamily = FontFamily.Parse("Consolas"), FontSize = 11, TextWrapping = TextWrapping.Wrap };
@@ -51,9 +51,10 @@ public sealed partial class MainWindow : Window
         _execution = execution ?? new(new DolphinBackend());
         string? warning = null;
         _settings = settings ?? AppSettings.Load(out warning);
+        StudioTheme.Apply(_settings.Theme);
         Title = ApplicationTitle;
         Width = 1360; Height = 920; MinWidth = 1060; MinHeight = 720;
-        Background = Brush.Parse("#15191F");
+        Background = StudioTheme.Brush(ThemeColor.Window);
         _layoutPath = LayoutPathFromArgs(args);
         Content = BuildLayout();
         InitializeRecovery();

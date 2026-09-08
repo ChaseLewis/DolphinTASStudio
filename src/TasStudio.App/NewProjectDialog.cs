@@ -18,14 +18,14 @@ internal sealed class NewProjectDialog : Window
     internal readonly ComboBox StartingPoint = new() { ItemsSource = new[] { "Power on", "Save state" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
     internal readonly TextBox StatePath = new();
     internal readonly TextBox Utc = new() { Text = "2000-01-01 00:00:00" };
-    internal readonly TextBlock Error = new() { Foreground = Brushes.Salmon, TextWrapping = TextWrapping.Wrap };
+    internal readonly TextBlock Error = new() { Foreground = StudioTheme.Brush(ThemeColor.Error), TextWrapping = TextWrapping.Wrap };
     private readonly StackPanel _stateRow;
-    private readonly TextBlock _startNote = new() { TextWrapping = TextWrapping.Wrap, Foreground = Brushes.LightSteelBlue, FontSize = 12 };
+    private readonly TextBlock _startNote = new() { TextWrapping = TextWrapping.Wrap, Foreground = StudioTheme.Brush(ThemeColor.Muted), FontSize = 12 };
 
     public NewProjectDialog(string? lastRom = null)
     {
         Title = "New project"; Width = 600; SizeToContent = SizeToContent.Height; CanResize = false;
-        Background = Brush.Parse("#20262F");
+        Background = StudioTheme.Brush(ThemeColor.Panel);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Rom.Text = lastRom;
         var content = new StackPanel { Margin = new Thickness(24), Spacing = 12 };

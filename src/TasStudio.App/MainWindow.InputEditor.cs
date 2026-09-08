@@ -13,7 +13,7 @@ public sealed partial class MainWindow
 {
     private readonly StickPad[] _stickPads = [new(), new()];
     private readonly Slider[] _triggerSliders = [new(), new()];
-    private readonly TextBlock _executionTargetLabel = new() { Name = "InputPosition", FontSize = 11, TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#9BAABB") };
+    private readonly TextBlock _executionTargetLabel = new() { Name = "InputPosition", FontSize = 11, TextWrapping = TextWrapping.Wrap, Foreground = StudioTheme.Brush(ThemeColor.Muted) };
     private readonly TextBlock _inputPreviewLabel = new() { Name = "PreviewFrame", FontWeight = FontWeight.SemiBold };
     private readonly CheckBox _useController = new() { Name = "UseController", Content = "Use controller", FontSize = 12, MinHeight = 24, Height = 24 };
     private Control _manualInputControls = null!;
@@ -160,9 +160,9 @@ public sealed partial class MainWindow
         next.Name = "NextFrame"; next.Height = 38; next.Margin = new Thickness(0, 2, 0, 0);
         ToolTip.SetTip(next, "Recorded inputs always play unchanged. F11: frame advance & keep input. F10: frame advance & clear (neutral new input), moving the cursor to the preview. F12: play one recorded frame with the cursor parked; stop at the end. Shift+F11 advances while held.");
         next.HorizontalAlignment = HorizontalAlignment.Stretch; next.HorizontalContentAlignment = HorizontalAlignment.Stretch;
-        next.Background = Brush.Parse("#5AC8FA"); next.Foreground = Brush.Parse("#102532");
+        next.Background = StudioTheme.Brush(ThemeColor.Primary); next.Foreground = StudioTheme.Brush(ThemeColor.PrimaryText);
         var nextContent = new Grid { ColumnDefinitions = new("Auto,*,Auto"), ColumnSpacing = 10 };
-        nextContent.Children.Add(new PathIcon { Data = Geometry.Parse(ToolIcons.Paths["step"]), Width = 20, Height = 20 });
+        nextContent.Children.Add(new PathIcon { Data = Geometry.Parse(ToolIcons.Paths["step"]), Width = 20, Height = 20, Foreground = StudioTheme.Brush(ThemeColor.PrimaryText) });
         var nextLabel = new TextBlock { Text = "Advance & keep input", FontSize = 15, FontWeight = FontWeight.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(nextLabel, 1); nextContent.Children.Add(nextLabel);
         var shortcut = new TextBlock { Text = "F11", VerticalAlignment = VerticalAlignment.Center };

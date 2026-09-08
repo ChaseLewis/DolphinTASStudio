@@ -52,7 +52,7 @@ public sealed partial class MainWindow
     private Control BuildDockWorkspace()
     {
         var display = new Viewbox { Stretch = Stretch.Uniform, Child = new Border { Width = GameCubeDisplayWidth, Height = GameCubeDisplayHeight, Child = _viewport } };
-        var game = new Grid { Background = Brushes.Black, ClipToBounds = true, Children = { display, _empty } };
+        var game = new Grid { Background = StudioTheme.Brush(ThemeColor.GameBackground), ClipToBounds = true, Children = { display, _empty } };
         StudioPanel Panel(string id, string title, Control view, double minWidth = 200, double minHeight = 120) =>
             new() { Id = id, Title = title, View = view, CanPin = false, CanDockAsDocument = false, MinWidth = minWidth, MinHeight = minHeight };
         _dockFactory = new WorkspaceFactory(new Dictionary<string, StudioPanel>
@@ -82,7 +82,8 @@ public sealed partial class MainWindow
 
     private IHostWindow CreateWorkspaceHost()
     {
-        var host = new HostWindow { MinWidth = 260, MinHeight = 180 };
+        var host = new HostWindow { MinWidth = 260, MinHeight = 180,
+            Background = StudioTheme.Brush(ThemeColor.Window), Foreground = StudioTheme.Brush(ThemeColor.Text) };
         AttachInputEvents(host);
         return host;
     }

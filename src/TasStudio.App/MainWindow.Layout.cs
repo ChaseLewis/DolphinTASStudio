@@ -13,9 +13,9 @@ public sealed partial class MainWindow
     private bool _loadingInspector;
     private readonly TextBlock _timelinePreview = new() { Name = "TimelinePosition", Text = "Frame: 0 · Poll: 0", VerticalAlignment = VerticalAlignment.Center, FontSize = 12 };
     private readonly TextBlock _playLabel = new() { Text = "Play", VerticalAlignment = VerticalAlignment.Center };
-    private readonly PathIcon _playIcon = new() { Width = 17, Height = 17, Foreground = Brush.Parse("#5AC8FA") };
+    private readonly PathIcon _playIcon = new() { Width = 17, Height = 17, Foreground = StudioTheme.Brush(ThemeColor.Icon) };
     private Button _transportPlay = null!;
-    private static readonly IBrush PanelBrush = Brush.Parse("#20262F"), LineBrush = Brush.Parse("#343E4B");
+    private static readonly IBrush PanelBrush = StudioTheme.Brush(ThemeColor.Panel), LineBrush = StudioTheme.Brush(ThemeColor.Border);
     private Control BuildLayout()
     {
         bool Loaded() => !_homeVisible && _execution.IsLoaded;
@@ -38,12 +38,12 @@ public sealed partial class MainWindow
         var soundIcon = new Grid { Width = 24, Height = 24 };
         soundIcon.Children.Add(new Avalonia.Controls.Shapes.Path
         {
-            Data = Geometry.Parse("M2,8 L7,8 L13,3 L13,21 L7,16 L2,16 Z"), Fill = Brush.Parse("#5AC8FA")
+            Data = Geometry.Parse("M2,8 L7,8 L13,3 L13,21 L7,16 L2,16 Z"), Fill = StudioTheme.Brush(ThemeColor.Icon)
         });
         var soundWaves = new Avalonia.Controls.Shapes.Path
         {
             Data = Geometry.Parse("M16,8 C19,10 19,14 16,16 M19,4 C25,8 25,16 19,20"),
-            Stroke = Brush.Parse("#5AC8FA"), StrokeThickness = 2
+            Stroke = StudioTheme.Brush(ThemeColor.Icon), StrokeThickness = 2
         };
         soundIcon.Children.Add(soundWaves);
         var cancelSymbol = new Border
@@ -53,7 +53,7 @@ public sealed partial class MainWindow
             Child = new Avalonia.Controls.Shapes.Path
             {
                 Data = Geometry.Parse("M8,1 A7,7 0 1 1 8,15 A7,7 0 1 1 8,1 M3,3 L13,13"),
-                Stroke = Brush.Parse("#F06464"), StrokeThickness = 2
+                Stroke = StudioTheme.Brush(ThemeColor.Error), StrokeThickness = 2
             }
         };
         soundIcon.Children.Add(cancelSymbol);
@@ -108,7 +108,7 @@ public sealed partial class MainWindow
     private Button IconButton(string name, string icon, Func<Task> action, Func<bool>? enabled = null)
     {
         var panel = new StackPanel { Spacing = 8, Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
-        panel.Children.Add(new PathIcon { Data = Geometry.Parse(ToolIcons.Paths[icon]), Width = 23, Height = 23, Foreground = Brush.Parse("#5AC8FA") });
+        panel.Children.Add(new PathIcon { Data = Geometry.Parse(ToolIcons.Paths[icon]), Width = 23, Height = 23, Foreground = StudioTheme.Brush(ThemeColor.Icon) });
         panel.Children.Add(new TextBlock { Text = name, FontSize = 12, VerticalAlignment = VerticalAlignment.Center });
         var button = ActionButton(name, action, enabled); button.Content = panel; button.Background = Brushes.Transparent; button.BorderThickness = new Thickness(0); button.Padding = new Thickness(10, 7);
         ToolTip.SetTip(button, name); Avalonia.Automation.AutomationProperties.SetName(button, name); return button;
@@ -243,14 +243,14 @@ public sealed partial class MainWindow
     {
         var button = ActionButton(label, action, enabled); button.FontSize = 12; button.Padding = new Thickness(6, 5);
         button.Background = Brushes.Transparent; button.BorderThickness = new Thickness(0);
-        button.Content = Row(new PathIcon { Data = Geometry.Parse(ToolIcons.Paths[icon]), Width = 17, Height = 17, Foreground = Brush.Parse("#5AC8FA") }, Label(label));
+        button.Content = Row(new PathIcon { Data = Geometry.Parse(ToolIcons.Paths[icon]), Width = 17, Height = 17, Foreground = StudioTheme.Brush(ThemeColor.Icon) }, Label(label));
         Avalonia.Automation.AutomationProperties.SetName(button, label); return button;
     }
     private Task ZoomTimeline(double multiplier) { _timeline.Zoom(multiplier); return Task.CompletedTask; }
     private void RefreshTimeline()
     {
         _timelinePreview.Text = $"{(_execution.IsRecordingLive ? "REC · " : "")}{PlaybackPositionText}";
-        _timelinePreview.Foreground = _execution.IsRecordingLive ? Brush.Parse("#F36369") : Brushes.White;
+        _timelinePreview.Foreground = _execution.IsRecordingLive ? StudioTheme.Brush(ThemeColor.Error) : StudioTheme.Brush(ThemeColor.Text);
         var playing = _execution.IsRunning;
         if (_playLabel.Text != (playing ? "Pause" : "Play"))
         {

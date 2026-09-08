@@ -36,7 +36,7 @@ public sealed partial class MainWindow
         devicePanel.Children.Add(devices); heading.Children.Add(devicePanel);
         var title = new TextBlock { Text = "GameCube · Port 1", FontSize = 19, FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(title, 2); heading.Children.Add(title);
-        var deviceStatus = new TextBlock { FontSize = 12, Margin = new Thickness(0, 8, 0, 0), Foreground = Brushes.Gray };
+        var deviceStatus = new TextBlock { FontSize = 12, Margin = new Thickness(0, 8, 0, 0), Foreground = StudioTheme.Brush(ThemeColor.Muted) };
         Grid.SetRow(deviceStatus, 1); Grid.SetColumnSpan(deviceStatus, 3); heading.Children.Add(deviceStatus); layout.Children.Add(heading);
         var mappingButtons = new Dictionary<PadControl, Button>();
         PadControl? listening = null;
@@ -52,7 +52,7 @@ public sealed partial class MainWindow
             foreach (var (control, button) in mappingButtons)
             {
                 button.Content = listening == control ? "Listening…" : BindingName(control);
-                button.BorderBrush = listening == control ? Brushes.DeepSkyBlue : null;
+                button.BorderBrush = listening == control ? StudioTheme.Brush(ThemeColor.Accent) : null;
                 button.BorderThickness = listening == control ? new Thickness(2) : new Thickness(1);
             }
         }
@@ -84,7 +84,7 @@ public sealed partial class MainWindow
                 button.ContextMenu = new ContextMenu { ItemsSource = new[] { clear } };
                 mappingButtons.Add(control, button); Grid.SetColumn(button, 1); row.Children.Add(button); body.Children.Add(row);
             }
-            return new Border { Child = body, Padding = new Thickness(10), Margin = new Thickness(0, 0, 10, 10), BorderBrush = Brushes.DimGray, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4) };
+            return new Border { Child = body, Padding = new Thickness(10), Margin = new Thickness(0, 0, 10, 10), BorderBrush = StudioTheme.Brush(ThemeColor.Border), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4) };
         }
         var groups = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*,*"), RowDefinitions = new RowDefinitions("Auto,Auto") };
         void Place(Control control, int column, int row) { Grid.SetColumn(control, column); Grid.SetRow(control, row); groups.Children.Add(control); }
@@ -102,11 +102,11 @@ public sealed partial class MainWindow
         calibration.Children.Add(Row(new TextBlock { Text = "Dead zone %", Width = 100, FontSize = 12, VerticalAlignment = VerticalAlignment.Center }, deadZone));
         calibration.Children.Add(Row(new TextBlock { Text = "Trigger click %", Width = 100, FontSize = 12, VerticalAlignment = VerticalAlignment.Center }, triggerClick));
         calibration.Children.Add(invertMain); calibration.Children.Add(invertC);
-        Place(new Border { Child = calibration, Padding = new Thickness(12), Margin = new Thickness(0, 0, 10, 10), BorderBrush = Brushes.DimGray, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4) }, 2, 1);
+        Place(new Border { Child = calibration, Padding = new Thickness(12), Margin = new Thickness(0, 0, 10, 10), BorderBrush = StudioTheme.Brush(ThemeColor.Border), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4) }, 2, 1);
         Grid.SetRow(groups, 1); layout.Children.Add(groups);
         var footer = new StackPanel { Spacing = 8 };
         footer.Children.Add(message);
-        footer.Children.Add(new TextBlock { Text = "Keyboard stays available with XInput. Shift/Ctrl halves main/C-stick range. Ports 2–4, rumble and native GameCube adapters are unavailable.", FontSize = 11, Foreground = Brushes.Gray, TextWrapping = TextWrapping.Wrap });
+        footer.Children.Add(new TextBlock { Text = "Keyboard stays available with XInput. Shift/Ctrl halves main/C-stick range. Ports 2–4, rumble and native GameCube adapters are unavailable.", FontSize = 11, Foreground = StudioTheme.Brush(ThemeColor.Muted), TextWrapping = TextWrapping.Wrap });
         var actions = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"), Margin = new Thickness(0, 4, 0, 0) };
         var defaults = new Button { Content = "Reset device defaults" };
         defaults.Click += (_, _) =>

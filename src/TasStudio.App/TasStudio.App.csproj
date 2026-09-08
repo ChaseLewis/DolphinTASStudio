@@ -1,11 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <ApplicationIcon>Assets/dolphin-tas-studio.ico</ApplicationIcon>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Dolphin JIT fastmem redirects exception continuations; disable CET only for this host executable. -->
     <CETCompat>false</CETCompat>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Themes/palettes.json" LogicalName="TasStudio.App.Themes.palettes.json" />
     <PackageReference Include="Dock.Avalonia.Themes.Fluent.v11" Version="11.3.20" />
     <PackageReference Include="Dock.Avalonia.v11" Version="11.3.20" />
     <PackageReference Include="Dock.Model.Mvvm" Version="12.1.0.4" />

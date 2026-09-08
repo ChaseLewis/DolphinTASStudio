@@ -1,0 +1,73 @@
+name: Build published Windows artifact
+
+run-name: Publish Windows x64 from ${{ github.ref_name }} (#${{ github.run_number }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      retention_days:
+        description: Artifact retention
+        required: true
+        default: "14"
+        type: choice
+        options:
+          - "7"
+          - "14"
+          - "30"
+          - "90"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish Windows x64
+    runs-on: windows-2025
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.400
+
+      - name: Build, test, and publish
+        shell: pwsh
+        run: >-
+          ./scripts/build.ps1
+          -Publish
+          -PublishDirectory artifacts/publish
+
+      - name: Verify complete distribution
+        shell: pwsh
+        run: |
+          $required = @(
+            'artifacts/publish/TasStudio.App.exe',
+            'artifacts/publish/TasStudio.Worker.exe',
+            'artifacts/publish/native/TasStudio.LibretroHost.dll',
+            'artifacts/publish/native/dolphin_libretro.dll',
+            'artifacts/publish/system/dolphin-emu/Sys',
+            'artifacts/publish/NOTICE.md',
+            'artifacts/publish/LICENSE'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Published distribution is missing $path"
+            }
+          }
+
+      - name: Upload published application
+        uses: actions/upload-artifact@v7
+        with:
+          name: dolphin-tas-studio-win-x64-${{ github.run_number }}
+          path: artifacts/publish/
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}
+          compression-level: 6

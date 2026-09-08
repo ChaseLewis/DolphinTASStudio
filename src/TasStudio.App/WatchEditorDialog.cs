@@ -20,7 +20,7 @@ internal sealed class WatchEditorDialog : Window
     private readonly List<TextBlock> _resolved = [];
     private readonly StackPanel _offsetRows = new() { Spacing = 5 };
     private readonly TextBlock _preview = new() { Text = "???", TextWrapping = TextWrapping.Wrap, MaxHeight = 65 };
-    private readonly TextBlock _error = new() { Foreground = Brush.Parse("#F08080"), TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock _error = new() { Foreground = StudioTheme.Brush(ThemeColor.Error), TextWrapping = TextWrapping.Wrap };
     private readonly DispatcherTimer _previewTimer = new() { Interval = TimeSpan.FromMilliseconds(220) };
     private bool _closed;
     private long _editVersion;
@@ -42,7 +42,7 @@ internal sealed class WatchEditorDialog : Window
     {
         _original = original;
         Title = (adding ? "Add " : "Edit ") + (original.IsGroup ? "group" : "watch");
-        Background = Brush.Parse("#20262F");
+        Background = StudioTheme.Brush(ThemeColor.Panel);
         Width = 440; MinWidth = 360; SizeToContent = SizeToContent.Height; CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         var body = new StackPanel { Margin = new Thickness(14), Spacing = 8 };

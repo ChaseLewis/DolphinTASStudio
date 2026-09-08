@@ -43,9 +43,9 @@ public sealed partial class MainWindow
         } });
         _recentProjects.Styles.Add(new Style(s => s.OfType<ListBoxItem>().Class(":selected")) { Setters =
         {
-            new Setter(BackgroundProperty, Brush.Parse("#17394B")), new Setter(TemplatedControl.BorderBrushProperty, Brush.Parse("#5AC8FA"))
+            new Setter(BackgroundProperty, StudioTheme.Brush(ThemeColor.Selection)), new Setter(TemplatedControl.BorderBrushProperty, StudioTheme.Brush(ThemeColor.SelectionBorder))
         } });
-        left.Children.Add(new TextBlock { Text = "RECENTLY OPENED", FontSize = 11, Foreground = Brushes.LightSteelBlue, Margin = new Thickness(0, 0, 0, 12) });
+        left.Children.Add(new TextBlock { Text = "RECENTLY OPENED", FontSize = 11, Foreground = StudioTheme.Brush(ThemeColor.Muted), Margin = new Thickness(0, 0, 0, 12) });
         _recentProjects.ItemTemplate = new FuncDataTemplate<RecentProject>((project, _) =>
         {
             if (project == null) return new Border();
@@ -55,11 +55,11 @@ public sealed partial class MainWindow
             row.Children.Add(art);
             var labels = new StackPanel { Spacing = 5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0) };
             labels.Children.Add(new TextBlock { Text = project.Name, FontWeight = FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
-            labels.Children.Add(new TextBlock { Text = Path.GetFileNameWithoutExtension(project.GamePath), FontSize = 12, Foreground = Brushes.LightSteelBlue, TextTrimming = TextTrimming.CharacterEllipsis });
+            labels.Children.Add(new TextBlock { Text = Path.GetFileNameWithoutExtension(project.GamePath), FontSize = 12, Foreground = StudioTheme.Brush(ThemeColor.Muted), TextTrimming = TextTrimming.CharacterEllipsis });
             var checkedStatus = _verification.GetValueOrDefault(project.Path, "Not checked");
             labels.Children.Add(new TextBlock { Text = checkedStatus.StartsWith("Needs attention:") ? "Needs attention" : checkedStatus, FontSize = 11, TextWrapping = TextWrapping.Wrap });
             Grid.SetColumn(labels, 1); row.Children.Add(labels);
-            var date = new TextBlock { Text = project.OpenedUtc.LocalDateTime.ToString("MMM d"), FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Foreground = Brushes.LightSteelBlue };
+            var date = new TextBlock { Text = project.OpenedUtc.LocalDateTime.ToString("MMM d"), FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Foreground = StudioTheme.Brush(ThemeColor.Muted) };
             Grid.SetColumn(date, 2); row.Children.Add(date); return row;
         });
         _recentProjects.SelectionChanged += (_, _) => ShowProjectDetails();
@@ -89,12 +89,12 @@ public sealed partial class MainWindow
         }
         _lastRecentPath = p.Path;
         _projectDetails.Children.Add(new TextBlock { Text = p.Name, FontSize = 20, FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.Wrap });
-        _projectDetails.Children.Add(new TextBlock { Text = Path.GetFileNameWithoutExtension(p.GamePath), Foreground = Brushes.LightSteelBlue, TextWrapping = TextWrapping.Wrap });
+        _projectDetails.Children.Add(new TextBlock { Text = Path.GetFileNameWithoutExtension(p.GamePath), Foreground = StudioTheme.Brush(ThemeColor.Muted), TextWrapping = TextWrapping.Wrap });
         if (p.InputCount > 0) _projectDetails.Children.Add(ProjectTimelinePreview(p));
         void Detail(string title, string value)
         {
             var grid = new Grid { ColumnDefinitions = new("110,*") };
-            grid.Children.Add(new TextBlock { Text = title, FontSize = 12, Foreground = Brushes.LightSteelBlue });
+            grid.Children.Add(new TextBlock { Text = title, FontSize = 12, Foreground = StudioTheme.Brush(ThemeColor.Muted) });
             var text = new TextBlock { Text = value, FontSize = 12, TextWrapping = TextWrapping.Wrap }; Grid.SetColumn(text, 1); grid.Children.Add(text); _projectDetails.Children.Add(grid);
         }
         Detail("Last saved", $"Frame {p.Position:N0}"); Detail("Timeline", $"{p.InputCount:N0} inputs · {p.TakeCount} candidate takes");
@@ -115,7 +115,7 @@ public sealed partial class MainWindow
     private static Control ProjectTimelinePreview(RecentProject project)
     {
         var takes = (project.TakeSpans ?? []).Take(4).ToArray();
-        var canvas = new Canvas { Width = 360, Height = 32 + takes.Length * 20, Background = Brush.Parse("#15191F") };
+        var canvas = new Canvas { Width = 360, Height = 32 + takes.Length * 20, Background = StudioTheme.Brush(ThemeColor.TimelineBackground) };
         var length = Math.Max(1L, Math.Max(project.InputCount, takes.Select(t => (long)t.Start + t.Length).DefaultIfEmpty().Max()));
         void Row(string name, long start, long count, int row, IBrush color)
         {
@@ -126,9 +126,9 @@ public sealed partial class MainWindow
             var span = new Border { Width = Math.Max(1, 280d * count / length), Height = 12, Background = color, CornerRadius = new CornerRadius(2) };
             Canvas.SetLeft(span, 72 + 280d * start / length); Canvas.SetTop(span, 8 + row * 20); canvas.Children.Add(span);
         }
-        Row("Active", 0, project.InputCount, 0, Brush.Parse("#5AC8FA"));
-        for (var i = 0; i < takes.Length; i++) Row(takes[i].Name, takes[i].Start, takes[i].Length, i + 1, Brush.Parse("#467E98"));
-        var playhead = new Border { Width = 1, Height = canvas.Height - 8, Background = Brushes.White };
+        Row("Active", 0, project.InputCount, 0, StudioTheme.Brush(ThemeColor.TimelineCursor));
+        for (var i = 0; i < takes.Length; i++) Row(takes[i].Name, takes[i].Start, takes[i].Length, i + 1, StudioTheme.Brush(ThemeColor.TimelineCandidatePreview));
+        var playhead = new Border { Width = 1, Height = canvas.Height - 8, Background = StudioTheme.Brush(ThemeColor.Text) };
         Canvas.SetLeft(playhead, 72 + 280d * Math.Min(project.Position, (ulong)length) / length); Canvas.SetTop(playhead, 4); canvas.Children.Add(playhead);
         return new Viewbox { Child = canvas, Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Stretch, MaxHeight = 112 };
     }

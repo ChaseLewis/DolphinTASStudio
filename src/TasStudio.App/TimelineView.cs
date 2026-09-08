@@ -13,10 +13,10 @@ public sealed class TimelineView : Control
     private const double LabelWidth = 118, LaneHeight = 38;
     private double RulerHeight => Tags.Count == 0 ? 64 : 94;
     private double FrameTop => RulerHeight - 32;
-    private static readonly IBrush TagBrush = Brush.Parse("#B6A7E8");
-    private static readonly IBrush BackgroundBrush = Brush.Parse("#1D222A"), GridBrush = Brush.Parse("#343E4B"),
-        TextBrush = Brush.Parse("#DAE3ED"), MutedBrush = Brush.Parse("#93A3B7"), ActiveBrush = Brush.Parse("#294F69"), InputBrush = Brush.Parse("#65468C"),
-        SelectedBrush = Brush.Parse("#354E6880"), CursorBrush = Brush.Parse("#5AC8FA"), SelectionBrush = Brush.Parse("#E7AF61"), InvalidBrush = Brush.Parse("#EA7D83");
+    private static readonly IBrush TagBrush = StudioTheme.Brush(ThemeColor.TimelineTag);
+    private static readonly IBrush BackgroundBrush = StudioTheme.Brush(ThemeColor.TimelineBackground), GridBrush = StudioTheme.Brush(ThemeColor.TimelineGrid),
+        TextBrush = StudioTheme.Brush(ThemeColor.Text), MutedBrush = StudioTheme.Brush(ThemeColor.Muted), ActiveBrush = StudioTheme.Brush(ThemeColor.TimelineActive), InputBrush = StudioTheme.Brush(ThemeColor.TimelineInput),
+        SelectedBrush = StudioTheme.Brush(ThemeColor.TimelineSelection), CursorBrush = StudioTheme.Brush(ThemeColor.TimelineCursor), SelectionBrush = StudioTheme.Brush(ThemeColor.TimelinePreview), InvalidBrush = StudioTheme.Brush(ThemeColor.TimelineInvalid);
     private static readonly Typeface Font = new("Segoe UI");
     public int FirstFrame { get; set; }
     public int VisibleFrames { get; set; } = 300;
@@ -108,12 +108,23 @@ public sealed class TimelineView : Control
         while (low < high) { var mid = low + (high - low + 1) / 2; if (PollBoundaries[mid] <= poll) low = mid; else high = mid - 1; }
         return low;
     }
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        StudioTheme.Changed += InvalidateVisual;
+        InvalidateVisual();
+    }
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        StudioTheme.Changed -= InvalidateVisual;
+        base.OnDetachedFromVisualTree(e);
+    }
     public override void Render(DrawingContext context)
     {
         base.Render(context); context.FillRectangle(BackgroundBrush, Bounds.WithX(0).WithY(0));
         void Text(string value, double x, double y, IBrush? brush = null) => context.DrawText(new FormattedText(value, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Font, 12, brush ?? TextBrush), new Point(x, y));
         Text("Saved states", 8, 8, MutedBrush); Text(HasPollScale ? "Input polls" : "Frame groups", 8, FrameTop + 4, MutedBrush);
-        if (Tags.Count > 0) Text("Tags", 8, 36, TagBrush);
+        if (Tags.Count > 0) Text("Tags", 8, 36, MutedBrush);
         var tick = Math.Max(1, (int)Math.Pow(10, Math.Floor(Math.Log10(Math.Max(1, VisibleFrames / 6d)))));
         while (VisibleFrames / tick > 10) tick *= 2;
         using (context.PushClip(new Rect(LabelWidth, 0, Math.Max(0, Bounds.Width - LabelWidth), Bounds.Height)))
@@ -124,8 +135,8 @@ public sealed class TimelineView : Control
             {
                 var x = X(tag.Position); if (x < LabelWidth || x > Bounds.Width) continue;
                 var box = TagBox(tag);
-                context.DrawRectangle(BackgroundBrush, new Pen(TagBrush), box, 3, 3);
-                using (context.PushClip(box.Deflate(1))) Text(tag.Name, box.X + 5, box.Y + 2, TagBrush);
+                context.DrawRectangle(TagBrush, new Pen(TagBrush), box, 3, 3);
+                using (context.PushClip(box.Deflate(1))) Text(tag.Name, box.X + 5, box.Y + 2, StudioTheme.Brush(ThemeColor.TimelineTagText));
                 context.DrawLine(new Pen(TagBrush), new(x, box.Bottom), new(x, FrameTop));
                 context.DrawLine(new Pen(TagBrush), new(x - 3, FrameTop - 4), new(x, FrameTop));
                 context.DrawLine(new Pen(TagBrush), new(x + 3, FrameTop - 4), new(x, FrameTop));
@@ -154,7 +165,7 @@ public sealed class TimelineView : Control
                             context.FillRectangle(InputBrush, new Rect(x, rect.Y, Math.Max(1, X(frame) - x), rect.Height));
                         }
                     }
-                    using (context.PushClip(rect)) Text(name, left + 7, y + 10, active ? TextBrush : MutedBrush);
+                    using (context.PushClip(rect)) Text(name, left + 7, y + 10, active ? StudioTheme.Brush(ThemeColor.TimelineClipText) : MutedBrush);
                 }
                 if (row == 0) { Clip(0, InputCount, "Active playback", true, Inputs); foreach (var s in Sections) Clip(s.Start, s.Length, s.Name, true, Inputs); }
                 else { var t = Takes[row - 1]; Clip(t.Start, t.Inputs.Length, t.Name, false, t.Inputs, t.Start); }
@@ -163,7 +174,7 @@ public sealed class TimelineView : Control
             context.FillRectangle(SelectedBrush, new Rect(X(SelectedFrame), RulerHeight + selectedRow * LaneHeight, Math.Max(3, X(SelectionEnd) - X(SelectedFrame)), LaneHeight));
             foreach (var marker in Markers)
             {
-                var x = X(marker.Position); var brush = marker.Valid ? marker.Automatic ? MutedBrush : SelectionBrush : InvalidBrush;
+                var x = X(marker.Position); var brush = marker.Valid ? marker.Automatic ? StudioTheme.Brush(ThemeColor.TimelineAutomatic) : SelectionBrush : InvalidBrush;
                 if (marker.Automatic) context.DrawEllipse(null, new Pen(brush, 2), new(x, 18), 4, 4);
                 else context.DrawRectangle(brush, null, new Rect(x - 4, 10, 8, 15), 1, 1);
                 if (!marker.Valid) context.DrawLine(new Pen(BackgroundBrush, 2), new(x - 5, 12), new(x + 5, 24));

@@ -53,19 +53,30 @@ public sealed class StickPad : Control
         static byte Encode(double value) => (byte)Math.Clamp(Math.Round(128 + value * (value < 0 ? 128 : 127)), 0, 255);
         return (Encode(x / length * radius), Encode(y / length * radius));
     }
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        StudioTheme.Changed += InvalidateVisual;
+        InvalidateVisual();
+    }
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        StudioTheme.Changed -= InvalidateVisual;
+        base.OnDetachedFromVisualTree(e);
+    }
     public override void Render(DrawingContext context)
     {
         var extent = Math.Max(1, Math.Min(Bounds.Width, Bounds.Height) - 14);
         var rect = new Rect((Bounds.Width - extent) / 2, (Bounds.Height - extent) / 2, extent, extent);
-        var line = new Pen(Brush.Parse("#536374"));
-        context.DrawRectangle(Brush.Parse("#141B22"), line, rect, 8, 8);
-        context.DrawEllipse(null, new Pen(Brush.Parse("#364653")), rect.Center, extent / 2, extent / 2);
+        var line = new Pen(StudioTheme.Brush(ThemeColor.Border));
+        context.DrawRectangle(StudioTheme.Brush(ThemeColor.Input), line, rect, 8, 8);
+        context.DrawEllipse(null, new Pen(StudioTheme.Brush(ThemeColor.Guide)), rect.Center, extent / 2, extent / 2);
         if (NormalizedRadius is { } radius)
-            context.DrawEllipse(null, new Pen(Brush.Parse("#5AC8FA")), rect.Center, extent / 2 * radius, extent / 2 * radius);
+            context.DrawEllipse(null, new Pen(StudioTheme.Brush(ThemeColor.Accent)), rect.Center, extent / 2 * radius, extent / 2 * radius);
         context.DrawLine(line, new(rect.Left, rect.Center.Y), new(rect.Right, rect.Center.Y));
         context.DrawLine(line, new(rect.Center.X, rect.Top), new(rect.Center.X, rect.Bottom));
         if (_x is { } x && _y is { } y)
-            context.DrawEllipse(Brush.Parse("#F36369"), new Pen(Brushes.White, 1),
+            context.DrawEllipse(StudioTheme.Brush(ThemeColor.ControllerDot), new Pen(StudioTheme.Brush(ThemeColor.ControllerDotBorder), 1),
                 new(rect.Center.X + Unit(x) * extent / 2, rect.Center.Y - Unit(y) * extent / 2), 5, 5);
     }
     protected override void OnPointerPressed(PointerPressedEventArgs e)
