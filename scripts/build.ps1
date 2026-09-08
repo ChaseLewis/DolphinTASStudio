@@ -1,4 +1,9 @@
-param([switch]$SkipNative, [switch]$Publish, [string]$PublishDirectory = 'artifacts/app')
+param(
+    [switch]$SkipNative,
+    [switch]$Publish,
+    [string]$PublishDirectory = 'artifacts/app',
+    [string]$Version = ''
+)
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 $coreRevision = 'e1e6d25fa1392b7d1bc05bf800c71b807a2bd2e0'
@@ -6,6 +11,10 @@ $corePath = Join-Path $workspace 'native/dolphin-libretro'
 $coreBuild = Join-Path $workspace 'native/build-dolphin'
 $hostBuild = Join-Path $workspace 'native/build-host'
 . (Join-Path $PSScriptRoot 'core-patches.ps1')
+if ($Version -and $Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$') {
+    throw "Version must be SemVer without a leading v, for example 0.1.0 or 1.0.0-rc.1. Found: $Version"
+}
+$versionArguments = if ($Version) { @("-p:Version=$Version") } else { @() }
 function Invoke-Checked([string]$Program, [string[]]$Arguments) {
     & $Program @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Program failed with exit code $LASTEXITCODE" }
@@ -33,12 +42,12 @@ try {
         Invoke-Checked cmake @('-S', (Join-Path $workspace 'native/TasStudio.LibretroHost'), '-B', $hostBuild, '-G', 'Visual Studio 18 2026', '-A', 'x64')
         Invoke-Checked cmake @('--build', $hostBuild, '--config', 'Release', '--parallel', '4')
     }
-    Invoke-Checked dotnet @('build', 'TasStudio.slnx', '-c', 'Release')
+    Invoke-Checked dotnet (@('build', 'TasStudio.slnx', '-c', 'Release') + $versionArguments)
     Invoke-Checked dotnet @('test', 'tests/TasStudio.Core.Tests', '-c', 'Release', '--no-build')
     if ($Publish) {
         $destination = if ([System.IO.Path]::IsPathRooted($PublishDirectory)) { [System.IO.Path]::GetFullPath($PublishDirectory) } else { [System.IO.Path]::GetFullPath((Join-Path $workspace $PublishDirectory)) }
-        Invoke-Checked dotnet @('publish', 'src/TasStudio.App', '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $destination)
-        Invoke-Checked dotnet @('publish', 'src/TasStudio.Worker', '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $destination)
+        Invoke-Checked dotnet (@('publish', 'src/TasStudio.App', '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $destination) + $versionArguments)
+        Invoke-Checked dotnet (@('publish', 'src/TasStudio.Worker', '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $destination) + $versionArguments)
         New-Item -ItemType Directory -Force -Path (Join-Path $destination 'native') | Out-Null
         Copy-Item -LiteralPath (Join-Path $hostBuild 'Release/TasStudio.LibretroHost.dll') -Destination (Join-Path $destination 'native')
         Copy-Item -LiteralPath (Join-Path $coreBuild 'Binaries/dolphin_libretro.dll') -Destination (Join-Path $destination 'native')
