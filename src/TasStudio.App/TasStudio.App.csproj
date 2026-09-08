@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Dolphin JIT fastmem redirects exception continuations; disable CET only for this host executable. -->
+    <CETCompat>false</CETCompat>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Dock.Avalonia.Themes.Fluent.v11" Version="11.3.20" />
+    <PackageReference Include="Dock.Avalonia.v11" Version="11.3.20" />
+    <PackageReference Include="Dock.Model.Mvvm" Version="12.1.0.4" />
+    <ProjectReference Include="../TasStudio.Dolphin/TasStudio.Dolphin.csproj" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.20" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.20" />
+    <PackageReference Include="NAudio.WinMM" Version="2.2.1" />
+  </ItemGroup>
+  <Target Name="CopyAvailableDolphinRuntime" AfterTargets="Build">
+    <ItemGroup>
+      <NativeRuntime Include="../../native/build-host/Release/TasStudio.LibretroHost.dll" Condition="Exists('../../native/build-host/Release/TasStudio.LibretroHost.dll')" />
+      <NativeRuntime Include="../../native/build-dolphin/Binaries/dolphin_libretro.dll" Condition="Exists('../../native/build-dolphin/Binaries/dolphin_libretro.dll')" />
+      <DolphinSystemFiles Include="../../native/dolphin-libretro/Data/Sys/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(NativeRuntime)" DestinationFolder="$(OutDir)native" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(DolphinSystemFiles)" DestinationFiles="@(DolphinSystemFiles->'$(OutDir)system/dolphin-emu/Sys/%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

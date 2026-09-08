@@ -1,0 +1,397 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index fd4426d..9872737 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -24,6 +24,14 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+ 
+ project(dolphin-emu)
+ 
++option(DOLPHIN_TAS_TRACE "Build opt-in bounded TAS instruction tracing" OFF)
++if(DOLPHIN_TAS_TRACE)
++  if(NOT LIBRETRO)
++    message(FATAL_ERROR "DOLPHIN_TAS_TRACE requires LIBRETRO")
++  endif()
++  add_compile_definitions(DOLPHIN_TAS_TRACE)
++endif()
++
+ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/CMake)
+ 
+ # Support functions
+diff --git a/Source/Core/Core/PowerPC/PowerPC.cpp b/Source/Core/Core/PowerPC/PowerPC.cpp
+index 564d74d..b310d59 100644
+--- a/Source/Core/Core/PowerPC/PowerPC.cpp
++++ b/Source/Core/Core/PowerPC/PowerPC.cpp
+@@ -29,6 +29,9 @@
+ #include "Core/PowerPC/MMU.h"
+ #include "Core/PowerPC/PPCSymbolDB.h"
+ #include "Core/System.h"
++#ifdef DOLPHIN_TAS_TRACE
++#include "Core/TasTrace.h"
++#endif
+ 
+ namespace PowerPC
+ {
+@@ -635,6 +638,9 @@ void PowerPCManager::CheckExternalExceptions()
+ 
+ bool PowerPCManager::CheckBreakPoints()
+ {
++#ifdef DOLPHIN_TAS_TRACE
++  Core::TasTrace::Observe(m_system, m_ppc_state);
++#endif
+   const TBreakPoint* bp = m_breakpoints.GetBreakpoint(m_ppc_state.pc);
+ 
+   if (!m_breakpoints.IsBreakingEnabled() || !bp || !bp->is_enabled ||
+diff --git a/Source/Core/Core/PowerPC/Jit64/Jit.cpp b/Source/Core/Core/PowerPC/Jit64/Jit.cpp
+index 1248b1a..d781fe4 100644
+--- a/Source/Core/Core/PowerPC/Jit64/Jit.cpp
++++ b/Source/Core/Core/PowerPC/Jit64/Jit.cpp
+@@ -47,6 +47,9 @@
+ #include "Core/PowerPC/PPCAnalyst.h"
+ #include "Core/PowerPC/PowerPC.h"
+ #include "Core/System.h"
++#ifdef DOLPHIN_TAS_TRACE
++#include "Core/TasTrace.h"
++#endif
+ 
+ using namespace Gen;
+ using namespace PowerPC;
+@@ -1069,6 +1072,17 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+ 
+     if (op.skip)
+     {
++#ifdef DOLPHIN_TAS_TRACE
++      if (Core::TasTrace::IsPoint(op.address))
++      {
++        gpr.Flush();
++        fpr.Flush();
++        MOV(32, PPCSTATE(pc), Imm32(op.address));
++        ABI_PushRegistersAndAdjustStack({}, 0);
++        ABI_CallFunctionP(Core::TasTrace::ObserveCurrent, &m_system);
++        ABI_PopRegistersAndAdjustStack({}, 0);
++      }
++#endif
+       if (IsBranchWatchEnabled())
+       {
+         // The only thing that currently sets op.skip is the BLR following optimization.
+diff --git a/Source/Core/DolphinLibretro/Main.cpp b/Source/Core/DolphinLibretro/Main.cpp
+index b048a65..9c60aa0 100644
+--- a/Source/Core/DolphinLibretro/Main.cpp
++++ b/Source/Core/DolphinLibretro/Main.cpp
+@@ -26,6 +26,9 @@
+ #include "Core/Core.h"
+ #include "Core/CoreTiming.h"
+ #include "Core/Tas.h"
++#ifdef DOLPHIN_TAS_TRACE
++#include "Core/TasTrace.h"
++#endif
+ #include "Core/GeckoCode.h"
+ #include "Core/GeckoCodeConfig.h"
+ #include "Core/HW/CPU.h"
+@@ -104,6 +107,54 @@ DOLPHIN_TAS_EXPORT uint32_t dolphin_tas_get_abi_version()
+   return Core::Tas::ABI_VERSION;
+ }
+ 
++DOLPHIN_TAS_EXPORT uint32_t dolphin_tas_trace_version()
++{
++#ifdef DOLPHIN_TAS_TRACE
++  return 1;
++#else
++  return 0;
++#endif
++}
++
++#ifdef DOLPHIN_TAS_TRACE
++DOLPHIN_TAS_EXPORT bool dolphin_tas_trace_start(const uint32_t* addresses, size_t count,
++                                               size_t capacity)
++{
++  try
++  {
++    return Core::TasTrace::Start(addresses, count, capacity);
++  }
++  catch (...)
++  {
++    Core::TasTrace::Stop(5);
++    return false;
++  }
++}
++
++DOLPHIN_TAS_EXPORT bool dolphin_tas_trace_stop()
++{
++  if (!Core::TasTrace::IsBoundary())
++    return false;
++  Core::TasTrace::Stop(1);
++  return true;
++}
++
++DOLPHIN_TAS_EXPORT bool dolphin_tas_trace_status(Core::TasTrace::Status* output)
++{
++  if (!Core::TasTrace::IsBoundary() || !output)
++    return false;
++  *output = Core::TasTrace::buffer.GetStatus(Core::TasTrace::active, Core::TasTrace::stop_reason);
++  return true;
++}
++
++DOLPHIN_TAS_EXPORT size_t dolphin_tas_trace_drain(Core::TasTrace::Record* output, size_t capacity)
++{
++  if (!Core::TasTrace::IsBoundary())
++    return 0;
++  return Core::TasTrace::buffer.Drain(output, capacity);
++}
++#endif
++
+ // All TAS exports must be called at boundaries, on the retro_run owner thread.
+ // Null disables the override for this port. No normalization or trigger coupling.
+ DOLPHIN_TAS_EXPORT bool dolphin_tas_set_pad(unsigned port, const DolphinTasPad* input)
+@@ -223,12 +274,19 @@ cb(RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO, (void*)subsystems);
+ 
+ void retro_init(void)
+ {
++#ifdef DOLPHIN_TAS_TRACE
++  Core::TasTrace::owner = std::this_thread::get_id();
++#endif
+   enum retro_pixel_format xrgb888 = RETRO_PIXEL_FORMAT_XRGB8888;
+   Libretro::environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &xrgb888);
+ }
+ 
+ void retro_deinit(void)
+ {
++#ifdef DOLPHIN_TAS_TRACE
++  Core::TasTrace::buffer.Reset(0);
++  Core::TasTrace::owner = {};
++#endif
+   Core::Tas::pad_enabled.fill(false);
+   Core::Tas::pads.fill(GCPadStatus{});
+   Core::Tas::pad_poll_counts.fill(0);
+@@ -306,6 +364,9 @@ void retro_get_system_av_info(retro_system_av_info* info)
+ 
+ void retro_reset(void)
+ {
++#ifdef DOLPHIN_TAS_TRACE
++  Core::TasTrace::Stop(2);
++#endif
+   Core::System::GetInstance().GetProcessorInterface().ResetButton_Tap();
+ }
+ 
+@@ -666,6 +727,9 @@ bool retro_serialize(void* data, size_t size)
+ 
+ bool retro_unserialize(const void* data, size_t size)
+ {
++#ifdef DOLPHIN_TAS_TRACE
++  Core::TasTrace::Stop(3);
++#endif
+   if (!data || size == 0)
+     return false;
+   bool success = false;
+diff --git a/Source/Core/DolphinLibretro/Boot.cpp b/Source/Core/DolphinLibretro/Boot.cpp
+index b216554..f05753f 100644
+--- a/Source/Core/DolphinLibretro/Boot.cpp
++++ b/Source/Core/DolphinLibretro/Boot.cpp
+@@ -25,6 +25,9 @@
+ #include "Core/HW/WiimoteReal/WiimoteReal.h"
+ #include "Core/PowerPC/PowerPC.h"
+ #include "Core/System.h"
++#ifdef DOLPHIN_TAS_TRACE
++#include "Core/TasTrace.h"
++#endif
+ #include "DolphinLibretro/Audio.h"
+ #include "DolphinLibretro/Input.h"
+ #include "DolphinLibretro/Log.h"
+@@ -765,6 +768,9 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info* i
+ 
+ void retro_unload_game(void)
+ {
++#ifdef DOLPHIN_TAS_TRACE
++  Core::TasTrace::Stop(4);
++#endif
+   auto& system = Core::System::GetInstance();
+ 
+   if (Core::IsRunning(system))
+diff --git a/Source/Core/Core/TasTrace.h b/Source/Core/Core/TasTrace.h
+new file mode 100644
+index 0000000..81e8ec9
+--- /dev/null
++++ b/Source/Core/Core/TasTrace.h
+@@ -0,0 +1,105 @@
++#pragma once
++
++#include <array>
++#include <thread>
++
++#include "Core/Config/MainSettings.h"
++#include "Core/Core.h"
++#include "Core/CoreTiming.h"
++#include "Core/HW/CPU.h"
++#include "Core/PowerPC/JitInterface.h"
++#include "Core/PowerPC/PowerPC.h"
++#include "Core/System.h"
++#include "Core/Tas.h"
++#include "Core/TasTraceBuffer.h"
++
++namespace Core::TasTrace
++{
++inline Buffer buffer;
++inline std::array<uint32_t, 64> points{};
++inline size_t point_count = 0;
++inline bool active = false, previous_debugging = false, previous_breaking = true;
++inline uint32_t stop_reason = 0;
++inline std::thread::id owner;
++
++inline bool IsBoundary()
++{
++  auto& system = Core::System::GetInstance();
++  return owner == std::this_thread::get_id() && !system.IsDualCoreMode() &&
++         system.GetCPU().IsStepping();
++}
++
++inline void Stop(uint32_t reason)
++{
++  if (!active)
++    return;
++  auto& system = Core::System::GetInstance();
++  const Core::CPUThreadGuard guard(system);
++  active = false;
++  stop_reason = reason;
++  auto& breakpoints = system.GetPowerPC().GetBreakPoints();
++  for (size_t index = 0; index < point_count; ++index)
++    breakpoints.Remove(points[index]);
++  point_count = 0;
++  breakpoints.EnableBreaking(previous_breaking);
++  Config::SetCurrent(Config::MAIN_ENABLE_DEBUGGING, previous_debugging);
++  system.GetJitInterface().ClearCache(guard);
++}
++
++inline bool Start(const uint32_t* addresses, size_t count, size_t capacity)
++{
++  if (!IsBoundary() || active || !addresses || !count || count > points.size() ||
++      !capacity || capacity > 1048576 || buffer.Drain(nullptr, 0))
++    return false;
++  auto& system = Core::System::GetInstance();
++  const Core::CPUThreadGuard guard(system);
++  auto& breakpoints = system.GetPowerPC().GetBreakPoints();
++  for (size_t index = 0; index < count; ++index)
++  {
++    if (addresses[index] < 0x80000000 || addresses[index] >= 0x81800000 ||
++        (addresses[index] & 3) || breakpoints.IsAddressBreakPoint(addresses[index]))
++      return false;
++    for (size_t earlier = 0; earlier < index; ++earlier)
++      if (addresses[index] == addresses[earlier])
++        return false;
++  }
++  buffer.Reset(capacity);
++  previous_debugging = Config::Get(Config::MAIN_ENABLE_DEBUGGING);
++  previous_breaking = breakpoints.IsBreakingEnabled();
++  stop_reason = 0;
++  active = true;
++  for (size_t index = 0; index < count; ++index)
++  {
++    breakpoints.Add(addresses[index], false, false, std::nullopt);
++    points[point_count++] = addresses[index];
++  }
++  breakpoints.EnableBreaking(true);
++  Config::SetCurrent(Config::MAIN_ENABLE_DEBUGGING, true);
++  system.GetJitInterface().ClearCache(guard);
++  return true;
++}
++
++inline bool IsPoint(uint32_t address)
++{
++  return active && std::find(points.begin(), points.begin() + point_count, address) !=
++                       points.begin() + point_count;
++}
++
++inline void Observe(Core::System& system, const PowerPC::PowerPCState& state)
++{
++  if (!IsPoint(state.pc))
++    return;
++  Record record{};
++  record.ticks = system.GetCoreTiming().GetTicks();
++  record.fields = Core::Tas::field_count;
++  record.pc = state.pc;
++  record.lr = state.spr[SPR_LR];
++  std::copy(std::begin(state.gpr), std::end(state.gpr), record.gpr);
++  buffer.Push(record);
++}
++
++inline void ObserveCurrent(Core::System& system)
++{
++  Observe(system, system.GetPPCState());
++}
++}
+diff --git a/Source/Core/Core/TasTraceBuffer.h b/Source/Core/Core/TasTraceBuffer.h
+new file mode 100644
+index 0000000..1908378
+--- /dev/null
++++ b/Source/Core/Core/TasTraceBuffer.h
+@@ -0,0 +1,72 @@
++#pragma once
++
++#include <algorithm>
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
++namespace Core::TasTrace
++{
++struct Record
++{
++  uint64_t sequence, ticks, fields;
++  uint32_t pc, lr;
++  uint32_t gpr[32];
++};
++static_assert(sizeof(Record) == 160);
++
++struct Status
++{
++  uint32_t version, record_size, active, stop_reason;
++  uint64_t capacity, pending, observed, dropped;
++};
++static_assert(sizeof(Status) == 48);
++
++class Buffer
++{
++public:
++  void Reset(size_t capacity)
++  {
++    std::vector<Record> replacement(capacity);
++    m_records.swap(replacement);
++    m_head = m_count = 0;
++    m_observed = m_dropped = 0;
++  }
++
++  void Push(Record record)
++  {
++    record.sequence = m_observed++;
++    if (m_count == m_records.size())
++    {
++      ++m_dropped;
++      return;
++    }
++    m_records[(m_head + m_count) % m_records.size()] = record;
++    ++m_count;
++  }
++
++  size_t Drain(Record* output, size_t capacity)
++  {
++    if (!output)
++      return m_count;
++    const size_t count = std::min(capacity, m_count);
++    for (size_t index = 0; index < count; ++index)
++      output[index] = m_records[(m_head + index) % m_records.size()];
++    if (!m_records.empty())
++      m_head = (m_head + count) % m_records.size();
++    m_count -= count;
++    return count;
++  }
++
++  Status GetStatus(bool active, uint32_t reason) const
++  {
++    return {1, sizeof(Record), active ? 1u : 0u, reason, m_records.size(), m_count,
++            m_observed, m_dropped};
++  }
++
++private:
++  std::vector<Record> m_records;
++  size_t m_head = 0, m_count = 0;
++  uint64_t m_observed = 0, m_dropped = 0;
++};
++}

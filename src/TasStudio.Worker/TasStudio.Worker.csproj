@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><CETCompat>false</CETCompat></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../TasStudio.Dolphin/TasStudio.Dolphin.csproj" /></ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="../../examples/csharp/Basic.Experiments/PulseExperiment.cs" LogicalName="TasStudio.Worker.ExperimentTemplate.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.20" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.20" />
+    <InternalsVisibleTo Include="TasStudio.Core.Tests" />
+  </ItemGroup>
+</Project>

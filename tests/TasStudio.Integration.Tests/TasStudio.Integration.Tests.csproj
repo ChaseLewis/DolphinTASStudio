@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><CETCompat>false</CETCompat></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../src/TasStudio.Dolphin/TasStudio.Dolphin.csproj" /></ItemGroup>
+  <Target Name="CopyRuntime" AfterTargets="Build">
+    <ItemGroup>
+      <NativeRuntime Include="../../native/build-host/Release/TasStudio.LibretroHost.dll;../../native/build-dolphin/Binaries/dolphin_libretro.dll" />
+      <DolphinSystemFiles Include="../../native/dolphin-libretro/Data/Sys/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(NativeRuntime)" DestinationFolder="$(OutDir)native" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(DolphinSystemFiles)" DestinationFiles="@(DolphinSystemFiles->'$(OutDir)system/dolphin-emu/Sys/%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

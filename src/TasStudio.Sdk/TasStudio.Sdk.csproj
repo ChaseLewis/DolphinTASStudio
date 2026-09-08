@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <Description>Typed API for isolated Dolphin TAS Studio experiments.</Description>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../TasStudio.Core/TasStudio.Core.csproj" /></ItemGroup>
+</Project>

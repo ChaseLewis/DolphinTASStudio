@@ -1,0 +1,14 @@
+{
+  "Name": "Movie then A pulses",
+  "SourceProject": "D:/TAS/My run/movie.tasproj",
+  "Project": "Basic.Experiments.csproj",
+  "AssemblyName": "Basic.Experiments",
+  "TypeName": "Basic.Experiments.PulseExperiment",
+  "Count": 4,
+  "Parallelism": 2,
+  "TimeoutSeconds": 300,
+  "Headless": true,
+  "Start": "Boot",
+  "PrerollGroups": 0,
+  "Parameters": { "PulseGroups": 60, "MaximumSeconds": 300 }
+}

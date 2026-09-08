@@ -1,0 +1,20 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TasStudio.App/TasStudio.App.csproj" />
+    <Project Path="src/TasStudio.Core/TasStudio.Core.csproj" />
+    <Project Path="src/TasStudio.Dolphin/TasStudio.Dolphin.csproj" />
+    <Project Path="src/TasStudio.Emulation/TasStudio.Emulation.csproj" />
+    <Project Path="src/TasStudio.Worker/TasStudio.Worker.csproj" />
+    <Project Path="src/TasStudio.Sdk/TasStudio.Sdk.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TasStudio.Core.Tests/TasStudio.Core.Tests.csproj" />
+    <Project Path="tests/TasStudio.Integration.Tests/TasStudio.Integration.Tests.csproj" />
+    <Project Path="tests/TasStudio.Experiment.Fixtures/TasStudio.Experiment.Fixtures.csproj" />
+  </Folder>
+  <Folder Name="/examples/">
+    <Project Path="examples/csharp/Basic.Experiments/Basic.Experiments.csproj" />
+    <Project Path="examples/csharp/Skies/Skies.csproj" />
+    <Project Path="examples/csharp/Skies.Experiments/Skies.Experiments.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,567 @@
+diff --git a/Source/Core/Core/Core.cpp b/Source/Core/Core/Core.cpp
+index 0efcece..1c22954 100644
+--- a/Source/Core/Core/Core.cpp
++++ b/Source/Core/Core/Core.cpp
+@@ -71,6 +71,9 @@
+ #include "Core/PowerPC/PowerPC.h"
+ #include "Core/State.h"
+ #include "Core/System.h"
++#ifdef __LIBRETRO__
++#include "Core/Tas.h"
++#endif
+ #include "Core/WiiRoot.h"
+ 
+ #ifdef USE_MEMORYWATCHER
+@@ -574,6 +577,10 @@ void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot,
+ 
+   s_frame_step = false;
+ 
++#ifdef __LIBRETRO__
++  Tas::field_count = 0;
++#endif
++
+   // If settings have changed since the previous run, notify callbacks.
+   CPUThreadConfigCallback::CheckForConfigChanges();
+ 
+@@ -706,7 +713,7 @@ void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot,
+   // This adds the SyncGPU handler to CoreTiming, so now CoreTiming::Advance might block.
+   system.GetFifo().Prepare();
+ 
+-  const Common::EventHook frame_presented =
++  Common::EventHook frame_presented =
+       GetVideoEvents().after_present_event.Register(&Core::Callback_FramePresented);
+ 
+   // Setup our core
+@@ -725,6 +732,11 @@ void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot,
+   // these are not needed if EmuThread is launched as a std::thread
+   if (!s_emu_thread.joinable())
+   {
++    // Libretro returns from initialization before executing frames. Keep the
++    // presentation hook alive until shutdown, just like the other core guards.
++    s_emu_thread_scope_guards.emplace_back(Common::MoveOnlyFunction<void()>(
++      [hook = std::move(frame_presented)]() mutable { hook.reset(); }));
++
+     s_emu_thread_scope_guards.emplace_back(Common::MoveOnlyFunction<void()>(
+       [g = std::move(flag_guard)]() mutable { g.Exit(); }));
+ 
+@@ -978,15 +990,20 @@ void Callback_FramePresented(const PresentInfo& present_info)
+   if (present_info.reason == PresentInfo::PresentReason::VideoInterfaceDuplicate)
+     return;
+ 
++#ifdef __LIBRETRO__
++  ++Tas::presentation_count;
++#endif
+   s_stop_frame_step.store(true);
+ }
+ 
+ // Called from VideoInterface::Update (CPU thread) at emulated field boundaries
+ void Callback_NewField(Core::System& system)
+ {
++#ifdef __LIBRETRO__
++  ++Tas::field_count;
++#endif
+   if (s_frame_step)
+   {
+-#ifndef __LIBRETRO__
+     // To ensure that s_stop_frame_step is up to date, wait for the GPU thread queue to empty,
+     // since it is may contain a swap event (which will call Callback_FramePresented). This hurts
+     // the performance a little, but luckily, performance matters less when using frame stepping.
+@@ -995,7 +1012,6 @@ void Callback_NewField(Core::System& system)
+     // Only stop the frame stepping if a new frame was displayed
+     // (as opposed to the previous frame being displayed for another frame).
+     if (s_stop_frame_step.load())
+-#endif
+     {
+       s_frame_step = false;
+       system.GetCPU().Break();
+diff --git a/Source/Core/Core/HW/EXI/EXI_DeviceIPL.cpp b/Source/Core/Core/HW/EXI/EXI_DeviceIPL.cpp
+index 82650ff..6da99fd 100644
+--- a/Source/Core/Core/HW/EXI/EXI_DeviceIPL.cpp
++++ b/Source/Core/Core/HW/EXI/EXI_DeviceIPL.cpp
+@@ -403,6 +403,16 @@ u32 CEXIIPL::GetEmulatedTime(Core::System& system, u32 epoch)
+   u64 ltime = 0;
+ 
+   auto& movie = system.GetMovie();
++#ifdef __LIBRETRO__
++  // The standalone custom RTC subtracts a boot offset from the wall clock.
++  // TAS must advance this clock only when the emulated machine advances.
++  if (Config::Get(Config::MAIN_CUSTOM_RTC_ENABLE))
++  {
++    ltime = Config::Get(Config::MAIN_CUSTOM_RTC_VALUE);
++    ltime += system.GetCoreTiming().GetTicks() / system.GetSystemTimers().GetTicksPerSecond();
++  }
++  else
++#endif
+   if (movie.IsMovieActive())
+   {
+     ltime = movie.GetRecordingStartTime();
+diff --git a/Source/Core/Core/HW/EXI/EXI_DeviceMemoryCard.cpp b/Source/Core/Core/HW/EXI/EXI_DeviceMemoryCard.cpp
+index 73ff1d6..22319f1 100644
+--- a/Source/Core/Core/HW/EXI/EXI_DeviceMemoryCard.cpp
++++ b/Source/Core/Core/HW/EXI/EXI_DeviceMemoryCard.cpp
+@@ -502,6 +502,10 @@ void CEXIMemoryCard::DoState(PointerWrap& p)
+   // unless we're loading (in which case we let the savestate contents decide, in order to stay
+   // aligned with them).
+   bool storeContents = m_system.GetMovie().IsMovieActive();
++#ifdef __LIBRETRO__
++  // TAS restore must rewind card contents and the card command state too.
++  storeContents = true;
++#endif
+   p.Do(storeContents);
+ 
+   if (storeContents)
+diff --git a/Source/Core/Core/HW/GCMemcard/GCMemcardRaw.cpp b/Source/Core/Core/HW/GCMemcard/GCMemcardRaw.cpp
+index 1a8644b..c9c40a9 100644
+--- a/Source/Core/Core/HW/GCMemcard/GCMemcardRaw.cpp
++++ b/Source/Core/Core/HW/GCMemcard/GCMemcardRaw.cpp
+@@ -221,7 +221,25 @@ void MemoryCard::ClearAll()
+ 
+ void MemoryCard::DoState(PointerWrap& p)
+ {
++#ifdef __LIBRETRO__
++  // TAS capture/restore can overlap the card's background flush thread.
++  std::unique_lock l(m_flush_mutex);
++#endif
+   p.Do(m_card_slot);
++#ifdef __LIBRETRO__
++  u32 restored_size = m_memory_card_size;
++  p.Do(restored_size);
++  if (restored_size != m_memory_card_size)
++  {
++    p.SetMeasureMode();
++    return;
++  }
++#else
+   p.Do(m_memory_card_size);
++#endif
+   p.DoArray(&m_memcard_data[0], m_memory_card_size);
++#ifdef __LIBRETRO__
++  if (p.IsReadMode())
++    MakeDirty();
++#endif
+ }
+diff --git a/Source/Core/Core/HW/GCPad.cpp b/Source/Core/Core/HW/GCPad.cpp
+index 188882c..8627b5b 100644
+--- a/Source/Core/Core/HW/GCPad.cpp
++++ b/Source/Core/Core/HW/GCPad.cpp
+@@ -5,6 +5,11 @@
+ 
+ #include "Common/Common.h"
+ #include "Core/HW/GCPadEmu.h"
++#ifdef __LIBRETRO__
++#include "Core/Tas.h"
++#include "Core/System.h"
++#include "Core/CoreTiming.h"
++#endif
+ #include "InputCommon/ControllerEmu/ControlGroup/ControlGroup.h"
+ #include "InputCommon/GCPadStatus.h"
+ #include "InputCommon/InputConfig.h"
+@@ -55,6 +60,45 @@ bool IsInitialized()
+ 
+ GCPadStatus GetStatus(int pad_num)
+ {
++#ifdef __LIBRETRO__
++  if (pad_num >= 0 && static_cast<unsigned>(pad_num) < Core::Tas::PORT_COUNT &&
++      Core::Tas::pad_enabled[pad_num])
++  {
++    namespace Tas = Core::Tas;
++    auto pad = Tas::pads[pad_num];
++    if (Tas::collect_polls)
++    {
++      const auto ticks = Core::System::GetInstance().GetCoreTiming().GetTicks() - Tas::poll_start_ticks;
++      const auto fields = Tas::field_count - Tas::poll_start_fields;
++      if (Tas::replaying_polls)
++      {
++        if (Tas::replay_cursor >= Tas::replay_polls.size())
++          Tas::poll_mismatch = true;
++        else
++        {
++          const auto& recorded = Tas::replay_polls[Tas::replay_cursor++];
++          if (recorded.port != static_cast<u32>(pad_num) || recorded.ticks != ticks || recorded.fields != fields)
++            Tas::poll_mismatch = true;
++          pad.button = recorded.buttons;
++          pad.stickX = recorded.stick_x; pad.stickY = recorded.stick_y;
++          pad.substickX = recorded.cstick_x; pad.substickY = recorded.cstick_y;
++          pad.triggerLeft = recorded.trigger_l; pad.triggerRight = recorded.trigger_r;
++          pad.analogA = (pad.button & PAD_BUTTON_A) ? UINT8_MAX : 0;
++          pad.analogB = (pad.button & PAD_BUTTON_B) ? UINT8_MAX : 0;
++        }
++      }
++      if (Tas::polls.size() < Tas::MAX_POLLS)
++        Tas::polls.push_back({ticks, fields, static_cast<u32>(pad_num), pad.button,
++                            pad.stickX, pad.stickY, pad.substickX, pad.substickY,
++                            pad.triggerLeft, pad.triggerRight});
++      else
++        Tas::poll_mismatch = true;
++    }
++    ++Tas::pad_poll_counts[pad_num];
++    Tas::last_polled_pads[pad_num] = pad;
++    return pad;
++  }
++#endif
+   return static_cast<GCPad*>(s_config.GetController(pad_num))->GetInput();
+ }
+ 
+diff --git a/Source/Core/Core/State.cpp b/Source/Core/Core/State.cpp
+index 15f3ec2..f5fec34 100644
+--- a/Source/Core/Core/State.cpp
++++ b/Source/Core/Core/State.cpp
+@@ -47,6 +47,9 @@
+ #include "Core/NetPlayProto.h"
+ #include "Core/PowerPC/PowerPC.h"
+ #include "Core/System.h"
++#ifdef __LIBRETRO__
++#include "Core/Tas.h"
++#endif
+ 
+ #include "UICommon/UICommon.h"
+ 
+@@ -140,6 +143,10 @@ static
+ #endif
+ void DoState(Core::System& system, PointerWrap& p)
+ {
++#ifdef __LIBRETRO__
++  // TAS states have a separate ABI identity from upstream Libretro states.
++  p.Do(Core::Tas::field_count);
++#endif
+   bool is_wii = system.IsWii() || system.IsMIOS();
+   const bool is_wii_currently = is_wii;
+   p.Do(is_wii);
+diff --git a/Source/Core/Core/Tas.h b/Source/Core/Core/Tas.h
+new file mode 100644
+index 0000000..7299d22
+--- /dev/null
++++ b/Source/Core/Core/Tas.h
+@@ -0,0 +1,42 @@
++// Copyright 2026 Dolphin TAS Studio contributors
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <array>
++#include <vector>
++
++#include "Common/CommonTypes.h"
++#include "InputCommon/GCPadStatus.h"
++
++// Accessed only by the frontend's emulation owner thread in single-core mode.
++// Input snapshots are deliberately not restored: every step supplies its inputs.
++namespace Core::Tas
++{
++inline constexpr unsigned ABI_VERSION = 3;
++inline constexpr unsigned PORT_COUNT = 4;
++inline constexpr u16 BUTTON_MASK = PAD_BUTTON_LEFT | PAD_BUTTON_RIGHT | PAD_BUTTON_DOWN |
++    PAD_BUTTON_UP | PAD_TRIGGER_Z | PAD_TRIGGER_R | PAD_TRIGGER_L | PAD_BUTTON_A |
++    PAD_BUTTON_B | PAD_BUTTON_X | PAD_BUTTON_Y | PAD_BUTTON_START;
++inline std::array<GCPadStatus, PORT_COUNT> pads{};
++inline std::array<bool, PORT_COUNT> pad_enabled{};
++// Cumulative diagnostic observations, not canonical emulation state.
++inline std::array<u64, PORT_COUNT> pad_poll_counts{};
++inline std::array<GCPadStatus, PORT_COUNT> last_polled_pads{};
++inline u64 field_count = 0;
++// Host-lifetime observation, deliberately not restored with savestates.
++inline u64 presentation_count = 0;
++struct Poll
++{
++  u64 ticks, fields;
++  u32 port;
++  u16 buttons;
++  u8 stick_x, stick_y, cstick_x, cstick_y, trigger_l, trigger_r;
++};
++static_assert(sizeof(Poll) == 32);
++inline std::vector<Poll> polls, replay_polls;
++inline u64 poll_start_ticks = 0, poll_start_fields = 0;
++inline size_t replay_cursor = 0;
++inline bool collect_polls = false, replaying_polls = false, poll_mismatch = false;
++inline constexpr size_t MAX_POLLS = 100000;
++}  // namespace Core::Tas
+diff --git a/Source/Core/DolphinLibretro/Boot.cpp b/Source/Core/DolphinLibretro/Boot.cpp
+index 67476b9..b216554 100644
+--- a/Source/Core/DolphinLibretro/Boot.cpp
++++ b/Source/Core/DolphinLibretro/Boot.cpp
+@@ -271,6 +271,7 @@ bool retro_load_game(const struct retro_game_info* game)
+   UICommon::Init();
+   Libretro::Log::Init();
+ 
++#ifdef HAS_LIBMGBA
+   if (Libretro::GBPlayer_active)
+   {
+     Config::SetBase(Config::MAIN_GBA_ROM_PATHS[Config::GBPLAYER_GBA_INDEX], Libretro::GBPlayer_rom_path);
+@@ -286,6 +287,8 @@ bool retro_load_game(const struct retro_game_info* game)
+     Config::SetBase(Config::MAIN_GBA_ROM_PATHS[Config::GBPLAYER_GBA_INDEX], std::string{});
+   }
+ 
++#endif
++
+   Discord::SetDiscordPresenceEnabled(false);
+   Common::SetEnableAlert(false);
+   Common::SetAbortOnPanicAlert(false);
+diff --git a/Source/Core/DolphinLibretro/Main.cpp b/Source/Core/DolphinLibretro/Main.cpp
+index 8df8d6c..b048a65 100644
+--- a/Source/Core/DolphinLibretro/Main.cpp
++++ b/Source/Core/DolphinLibretro/Main.cpp
+@@ -24,6 +24,8 @@
+ #include "Core/Config/SYSCONFSettings.h"
+ #include "Core/ConfigManager.h"
+ #include "Core/Core.h"
++#include "Core/CoreTiming.h"
++#include "Core/Tas.h"
+ #include "Core/GeckoCode.h"
+ #include "Core/GeckoCodeConfig.h"
+ #include "Core/HW/CPU.h"
+@@ -44,6 +46,7 @@
+ #include "VideoCommon/AsyncRequests.h"
+ #include "VideoCommon/Fifo.h"
+ #include "VideoCommon/OnScreenDisplay.h"
++#include "VideoCommon/Present.h"
+ #include "VideoCommon/TextureConfig.h"
+ #include "VideoCommon/VideoCommon.h"
+ #include "VideoCommon/VideoConfig.h"
+@@ -83,6 +86,109 @@ extern void reload_cheats_from_ini();
+ 
+ extern "C" {
+ 
++#ifdef _WIN32
++#define DOLPHIN_TAS_EXPORT __declspec(dllexport)
++#else
++#define DOLPHIN_TAS_EXPORT __attribute__((visibility("default")))
++#endif
++
++struct DolphinTasPad
++{
++  uint16_t buttons;
++  uint8_t stick_x, stick_y, cstick_x, cstick_y, trigger_l, trigger_r;
++};
++static_assert(sizeof(DolphinTasPad) == 8);
++
++DOLPHIN_TAS_EXPORT uint32_t dolphin_tas_get_abi_version()
++{
++  return Core::Tas::ABI_VERSION;
++}
++
++// All TAS exports must be called at boundaries, on the retro_run owner thread.
++// Null disables the override for this port. No normalization or trigger coupling.
++DOLPHIN_TAS_EXPORT bool dolphin_tas_set_pad(unsigned port, const DolphinTasPad* input)
++{
++  if (port >= Core::Tas::PORT_COUNT || Core::System::GetInstance().IsDualCoreMode())
++    return false;
++  if (!input)
++  {
++    Core::Tas::pad_enabled[port] = false;
++    return true;
++  }
++  if ((input->buttons & ~Core::Tas::BUTTON_MASK) != 0)
++    return false;
++  GCPadStatus pad;
++  pad.button = input->buttons;
++  pad.stickX = input->stick_x;
++  pad.stickY = input->stick_y;
++  pad.substickX = input->cstick_x;
++  pad.substickY = input->cstick_y;
++  pad.triggerLeft = input->trigger_l;
++  pad.triggerRight = input->trigger_r;
++  pad.analogA = (pad.button & PAD_BUTTON_A) ? UINT8_MAX : 0;
++  pad.analogB = (pad.button & PAD_BUTTON_B) ? UINT8_MAX : 0;
++  Core::Tas::pads[port] = pad;
++  Core::Tas::pad_enabled[port] = true;
++  return true;
++}
++
++DOLPHIN_TAS_EXPORT uint64_t dolphin_tas_get_ticks()
++{
++  return Core::System::GetInstance().GetCoreTiming().GetTicks();
++}
++
++DOLPHIN_TAS_EXPORT uint64_t dolphin_tas_get_field_count()
++{
++  return Core::Tas::field_count;
++}
++
++DOLPHIN_TAS_EXPORT uint64_t dolphin_tas_get_presentation_count()
++{
++  return Core::Tas::presentation_count;
++}
++
++DOLPHIN_TAS_EXPORT bool dolphin_tas_begin_polls(const Core::Tas::Poll* polls, size_t count, bool replay)
++{
++  namespace Tas = Core::Tas;
++  if (count > Tas::MAX_POLLS || (count && !polls)) return false;
++  Tas::polls.clear(); Tas::replay_polls.clear();
++  if (count) Tas::replay_polls.assign(polls, polls + count);
++  Tas::replay_cursor = 0; Tas::poll_mismatch = false;
++  Tas::poll_start_ticks = Core::System::GetInstance().GetCoreTiming().GetTicks();
++  Tas::poll_start_fields = Tas::field_count;
++  Tas::collect_polls = true; Tas::replaying_polls = replay;
++  return true;
++}
++
++DOLPHIN_TAS_EXPORT bool dolphin_tas_end_polls()
++{
++  namespace Tas = Core::Tas;
++  Tas::collect_polls = false;
++  return !Tas::poll_mismatch && (!Tas::replaying_polls || Tas::replay_cursor == Tas::replay_polls.size());
++}
++
++DOLPHIN_TAS_EXPORT size_t dolphin_tas_copy_polls(Core::Tas::Poll* output, size_t capacity)
++{
++  const auto& polls = Core::Tas::polls;
++  if (output && capacity >= polls.size()) std::copy(polls.begin(), polls.end(), output);
++  return polls.size();
++}
++
++DOLPHIN_TAS_EXPORT uint64_t dolphin_tas_get_pad_poll_count(unsigned port)
++{
++  return port < Core::Tas::PORT_COUNT ? Core::Tas::pad_poll_counts[port] : 0;
++}
++
++DOLPHIN_TAS_EXPORT bool dolphin_tas_get_last_polled_pad(unsigned port, DolphinTasPad* output)
++{
++  if (port >= Core::Tas::PORT_COUNT || !output || !Core::Tas::pad_poll_counts[port])
++    return false;
++  const auto& pad = Core::Tas::last_polled_pads[port];
++  *output = {pad.button, pad.stickX, pad.stickY, pad.substickX, pad.substickY,
++             pad.triggerLeft, pad.triggerRight};
++  return true;
++}
++
+ void retro_set_environment(retro_environment_t cb)
+ {
+   Libretro::environ_cb = cb;
+@@ -123,6 +229,10 @@ void retro_init(void)
+ 
+ void retro_deinit(void)
+ {
++  Core::Tas::pad_enabled.fill(false);
++  Core::Tas::pads.fill(GCPadStatus{});
++  Core::Tas::pad_poll_counts.fill(0);
++  Core::Tas::last_polled_pads.fill(GCPadStatus{});
+   Libretro::g_emuthread_launched = false;
+ #ifdef PERF_TEST
+   perf_cb.perf_log();
+@@ -526,6 +636,9 @@ size_t retro_serialize_size(void)
+ 
+ bool retro_serialize(void* data, size_t size)
+ {
++  if (!data || size == 0)
++    return false;
++  bool success = false;
+   Core::System& system = Core::System::GetInstance();
+   AsyncRequests* ar = AsyncRequests::GetInstance();
+ 
+@@ -539,6 +652,7 @@ bool retro_serialize(void* data, size_t size)
+   Core::RunOnCPUThread(Core::System::GetInstance(), [&] {
+     PointerWrap p((u8**)&data, size, PointerWrap::Mode::Write);
+     State::DoState(Core::System::GetInstance(), p);
++    success = p.IsWriteMode();
+   }, true);
+ 
+   if (!was_cpu)
+@@ -547,11 +661,14 @@ bool retro_serialize(void* data, size_t size)
+   if (system.IsDualCoreMode())
+     ar->SetPassthrough(false);
+ 
+-  return true;
++  return success;
+ }
+ 
+ bool retro_unserialize(const void* data, size_t size)
+ {
++  if (!data || size == 0)
++    return false;
++  bool success = false;
+   Core::System& system = Core::System::GetInstance();
+   AsyncRequests* ar = AsyncRequests::GetInstance();
+ 
+@@ -563,8 +680,14 @@ bool retro_unserialize(const void* data, size_t size)
+     Core::DeclareAsCPUThread();
+ 
+   Core::RunOnCPUThread(Core::System::GetInstance(), [&] {
++    // Apply pending game compatibility settings before restoring GPU caches.
++    // Applying them during the first post-restore present can discard that cache.
++    CheckForConfigChanges();
+     PointerWrap p((u8**)&data, size, PointerWrap::Mode::Read);
+     State::DoState(Core::System::GetInstance(), p);
++    success = p.IsReadMode();
++    if (success)
++      g_presenter->RedrawAfterStateLoad();
+   }, true);
+ 
+   if (!was_cpu)
+@@ -573,7 +696,7 @@ bool retro_unserialize(const void* data, size_t size)
+   if (system.IsDualCoreMode())
+     ar->SetPassthrough(false);
+ 
+-  return true;
++  return success;
+ }
+ 
+ unsigned retro_get_region()
+diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
+index 95c2e83..159e146 100644
+--- a/Source/Core/VideoCommon/Present.cpp
++++ b/Source/Core/VideoCommon/Present.cpp
+@@ -1073,8 +1073,18 @@ void Presenter::DoState(PointerWrap& p)
+   p.Do(m_last_xfb_stride);
+   p.Do(m_last_xfb_height);
+ 
+-  // If we're loading and there is a last XFB, re-display it.
+-  if (p.IsReadMode() && m_last_xfb_stride != 0)
++#ifndef __LIBRETRO__
++  if (p.IsReadMode())
++    RedrawAfterStateLoad();
++#endif
++}
++
++void Presenter::RedrawAfterStateLoad()
++{
++  // XFB lookup validates cached textures against guest RAM. Libretro calls this
++  // only after hardware/RAM restoration, otherwise valid saved copies can be
++  // discarded against the previous session's memory and displayed as purple.
++  if (m_last_xfb_stride != 0)
+   {
+     // This technically counts as the end of the frame
+     GetVideoEvents().after_frame_event.Trigger(Core::System::GetInstance());
+diff --git a/Source/Core/VideoCommon/Present.h b/Source/Core/VideoCommon/Present.h
+index 4ecd29d..7461969 100644
+--- a/Source/Core/VideoCommon/Present.h
++++ b/Source/Core/VideoCommon/Present.h
+@@ -45,6 +45,7 @@ public:
+ 
+   void Present(PresentInfo* present_info = nullptr);
+   void ClearLastXfbId() { m_last_xfb_id = std::numeric_limits<u64>::max(); }
++  void RedrawAfterStateLoad();
+ 
+   bool Initialize();
+ 
+diff --git a/Source/Core/VideoCommon/ShaderCache.cpp b/Source/Core/VideoCommon/ShaderCache.cpp
+index 2627656..651b357 100644
+--- a/Source/Core/VideoCommon/ShaderCache.cpp
++++ b/Source/Core/VideoCommon/ShaderCache.cpp
+@@ -171,6 +171,9 @@ void ShaderCache::WaitForAsyncCompiler()
+   bool running = true;
+ 
+   constexpr auto update_ui_progress = [](size_t completed, size_t total) {
++    // The libretro frontend owns loading UI. Presenting before the first game
++    // frame can leave its graphics context in an invalid initial state.
++#ifndef __LIBRETRO__
+     const float center_x = ImGui::GetIO().DisplaySize.x * 0.5f;
+     const float center_y = ImGui::GetIO().DisplaySize.y * 0.5f;
+     const float scale = ImGui::GetIO().DisplayFramebufferScale.x;
+@@ -191,6 +194,7 @@ void ShaderCache::WaitForAsyncCompiler()
+     ImGui::End();
+ 
+     g_presenter->Present();
++#endif
+   };
+ 
+   while (running &&
+@@ -202,7 +206,9 @@ void ShaderCache::WaitForAsyncCompiler()
+   }
+ 
+   // An extra Present to clear the screen
++#ifndef __LIBRETRO__
+   g_presenter->Present();
++#endif
+ }
+ 
+ template <typename SerializedUidType, typename UidType>

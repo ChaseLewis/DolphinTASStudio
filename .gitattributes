@@ -1,0 +1,12 @@
+* text=auto
+*.cs text eol=lf
+*.csproj text eol=lf
+*.slnx text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.js text eol=lf
+*.cjs text eol=lf
+*.py text eol=lf
+*.ps1 text eol=crlf
+*.patch text eol=lf
+*.png binary

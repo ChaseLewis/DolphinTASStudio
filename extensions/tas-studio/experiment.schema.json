@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "C# TAS experiment",
+  "type": "object",
+  "required": ["Name", "SourceProject", "Project", "AssemblyName", "TypeName"],
+  "additionalProperties": false,
+  "properties": {
+    "Name": { "type": "string", "minLength": 1 },
+    "SourceProject": { "type": "string", "description": "Saved .tasproj path, relative to this configuration or absolute." },
+    "Project": { "type": "string", "description": "C# class library .csproj, relative to this configuration or absolute." },
+    "AssemblyName": { "type": "string", "description": "Compiled DLL name without .dll." },
+    "TypeName": { "type": "string", "description": "Full name of the public IExperiment class." },
+    "Count": { "type": "integer", "minimum": 1, "default": 4, "description": "Total trials (positive 32-bit integer). There is no 10,000-trial cap; Parallelism limits simultaneous workers." },
+    "Parallelism": { "type": "integer", "minimum": 1, "maximum": 4, "default": 2 },
+    "Headless": { "type": "boolean", "default": true, "description": "False opens a read-only game preview for each active trial. Closing a preview cancels only that trial." },
+    "TimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400, "default": 300 },
+    "Start": { "enum": ["Boot", "SaveState"], "default": "Boot" },
+    "StateId": { "type": ["string", "null"] },
+    "StartUtcSeconds": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    "PrerollSeconds": { "type": "number", "minimum": 0, "maximum": 86400, "default": 0 },
+    "PrerollGroups": { "type": "integer", "minimum": 0, "maximum": 10000000, "default": 0 },
+    "Parameters": { "type": "object", "default": {} }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "name": "experiments",
+  "displayName": "TAS Studio Experiments",
+  "description": "Author C# experiments, run isolated Dolphin trials, and review results in TAS Studio.",
+  "version": "0.1.0",
+  "publisher": "tas-studio",
+  "license": "GPL-2.0-or-later",
+  "engines": { "vscode": "^1.96.0" },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "files": ["extension.js", "helpers.js", "experiment.schema.json", "README.md", "LICENSE"],
+  "activationEvents": ["workspaceContains:**/*.tascsharp.json"],
+  "capabilities": { "untrustedWorkspaces": { "supported": false } },
+  "scripts": { "check": "node --check extension.js && node --test test/helpers.test.js test/resume.test.js" },
+  "contributes": {
+    "commands": [
+      { "command": "tasStudio.new", "title": "TAS Studio: New C# Experiment Workspace" },
+      { "command": "tasStudio.run", "title": "Run Experiment", "icon": "$(play)" },
+      { "command": "tasStudio.resume", "title": "Resume Experiment Batch", "icon": "$(debug-continue)" },
+      { "command": "tasStudio.cancel", "title": "Cancel Experiments", "icon": "$(debug-stop)" },
+      { "command": "tasStudio.refresh", "title": "Refresh Experiments", "icon": "$(refresh)" },
+      { "command": "tasStudio.openResult", "title": "Open Result in TAS Studio", "icon": "$(link-external)" },
+      { "command": "tasStudio.openLog", "title": "Open Trial Log", "icon": "$(output)" }
+    ],
+    "views": { "explorer": [{ "id": "tasStudio.experiments", "name": "TAS Experiments" }] },
+    "menus": {
+      "view/title": [
+        { "command": "tasStudio.cancel", "when": "view == tasStudio.experiments", "group": "navigation" },
+        { "command": "tasStudio.refresh", "when": "view == tasStudio.experiments", "group": "navigation" }
+      ],
+      "view/item/context": [
+        { "command": "tasStudio.run", "when": "view == tasStudio.experiments && viewItem == experiment", "group": "inline" },
+        { "command": "tasStudio.resume", "when": "view == tasStudio.experiments && viewItem == batch", "group": "inline" },
+        { "command": "tasStudio.openResult", "when": "view == tasStudio.experiments && viewItem == result", "group": "inline" },
+        { "command": "tasStudio.openLog", "when": "view == tasStudio.experiments && (viewItem == result || viewItem == failedResult)", "group": "inline" }
+      ]
+    },
+    "configuration": {
+      "title": "TAS Studio",
+      "properties": {
+        "tasStudio.workerPath": { "type": "string", "default": "", "description": "Absolute path to TasStudio.Worker.exe from your Studio build." }
+      }
+    },
+    "jsonValidation": [{ "fileMatch": "*.tascsharp.json", "url": "./experiment.schema.json" }]
+  }
+}
