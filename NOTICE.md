@@ -17,6 +17,8 @@ Managed and host dependencies retain their respective licenses:
 
 - Avalonia and Dock: MIT.
 - NAudio: MIT.
+- Velopack update runtime and packaging tools: MIT; see `licenses/Velopack-LICENSE.txt`
+  in source and `LICENSES/Velopack-LICENSE.txt` in distributions.
 - .NET runtime and libraries: MIT and component-specific notices.
 - Libretro API headers: MIT.
 - Microsoft.Data.Sqlite: MIT.

@@ -57,6 +57,7 @@ public sealed partial class MainWindow : Window
         Background = StudioTheme.Brush(ThemeColor.Window);
         _layoutPath = LayoutPathFromArgs(args);
         Content = BuildLayout();
+        InitializeUpdates();
         InitializeRecovery();
         _input.Configure(_settings);
         _execution.LiveInput = () => _execution.IsManualPlay ? _input.Read() : _turboInput.Apply(_input.Read(), _execution.Position);
@@ -82,6 +83,12 @@ public sealed partial class MainWindow : Window
             var projectIndex = Array.IndexOf(args, "--project");
             if (projectIndex >= 0 && projectIndex + 1 < args.Length) await Perform(() => OpenProjectPath(args[projectIndex + 1]));
             if (args.Contains("--autoplay") && _execution.IsLoaded) await Perform(() => _execution.RunAsync());
+            var updatesCaptureIndex = Array.IndexOf(args, "--updates-screenshot");
+            if (updatesCaptureIndex >= 0 && updatesCaptureIndex + 1 < args.Length)
+            {
+                await Perform(() => UpdateSettingsCore(args[updatesCaptureIndex + 1]));
+                if (args.Contains("--exit-after-capture")) { _closingApproved = true; Close(); return; }
+            }
             var settingsCaptureIndex = Array.IndexOf(args, "--settings-screenshot");
             if (settingsCaptureIndex >= 0 && settingsCaptureIndex + 1 < args.Length)
             {
@@ -217,7 +224,13 @@ public sealed partial class MainWindow : Window
         {
             await _execution.PauseAsync();
             _audio.Flush();
-            if (!await ResolveUnsaved()) return;
+            if (!await ResolveUnsaved()) { Program.RestartForUpdate = false; return; }
+            if (Program.RestartForUpdate && Program.Activity?.CanApply() != true)
+            {
+                Program.RestartForUpdate = false;
+                await ShowMessage("Update deferred", "Close other Studio windows and wait for experiment workers to finish, then restart to update.");
+                return;
+            }
             _settings.Save();
             _closingApproved = true;
             Close();

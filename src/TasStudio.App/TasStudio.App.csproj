@@ -11,6 +11,7 @@
     <PackageReference Include="Dock.Avalonia.Themes.Fluent.v11" Version="11.3.20" />
     <PackageReference Include="Dock.Avalonia.v11" Version="11.3.20" />
     <PackageReference Include="Dock.Model.Mvvm" Version="12.1.0.4" />
+    <PackageReference Include="Velopack" Version="1.2.0" />
     <ProjectReference Include="../TasStudio.Dolphin/TasStudio.Dolphin.csproj" />
     <PackageReference Include="Avalonia.Desktop" Version="11.3.20" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.20" />

@@ -26,7 +26,7 @@ public sealed partial class MainWindow
             new MenuItem { Header = "_File", ItemsSource = new Control[] { ActionMenu("Play Game…    Ctrl+O", OpenGame), ActionMenu("Projects", ShowProjects), ActionMenu("New Project", NewProject), ActionMenu("Open Project / Replay…", OpenProject), ActionMenu("Recover inputs…", RecoverInputs), ActionMenu("Save Project    Ctrl+S", SaveProject, Project), ActionMenu("Save Project As…", SaveProjectAs, Project), ActionMenu("Export Replay…", ExportReplay, Project) } },
             new MenuItem { Header = "_Emulation", ItemsSource = new Control[] { ActionMenu("Play / Pause", ToggleRun, Loaded), ActionMenu("Frame advance & keep input    F11", Step, Loaded), ActionMenu("Frame advance & clear    F10", StepNeutral, () => Loaded() && _execution.IsPreviewCurrent && _timeline.SelectedTake == null), ActionMenu("Play one recorded frame    F12", StepWithoutMovingSelection, () => Loaded() && _execution.HasProject && _execution.IsPreviewCurrent && _execution.Position < (ulong)_execution.Inputs.Count), ActionMenu("Pause    Escape", PausePlayback, Loaded), ActionMenu("Restart from start", RestartPlayback, Project), ActionMenu("Previous save state", PreviousState, Project), ActionMenu("Reset", Reset, Loaded), new Separator(), ActionMenu("Save State to File…", SaveStateFile, Loaded), ActionMenu("Load State from File…", LoadStateFile, Loaded), ActionMenu("Save Slot 1    Shift+F1", () => SaveSlot(1), Loaded), ActionMenu("Load Slot 1    F1", () => LoadSlot(1), Loaded) } },
             new MenuItem { Header = "_Movie", ItemsSource = new Control[] { ActionMenu("Record live controller input", RecordLive, Project), new Separator(), ActionMenu("Undo    Ctrl+Z", _execution.UndoAsync, Project), ActionMenu("Redo    Ctrl+Y", _execution.RedoAsync, Project), ActionMenu("Copy Selection as Take", CopyTake, Project), ActionMenu("Save Named State", SaveNamedState, Project) } },
-            new MenuItem { Header = "_Options", ItemsSource = new[] { ActionMenu("Controllers…", ControllerSettings), ActionMenu("Configuration…", ApplicationSettings) } },
+            new MenuItem { Header = "_Options", ItemsSource = new[] { ActionMenu("Controllers…", ControllerSettings), ActionMenu("Configuration…", ApplicationSettings), ActionMenu("Updates…", UpdateSettings) } },
             new MenuItem { Header = "_View", ItemsSource = BuildViewMenu() }
         } });
         var toolbar = new WrapPanel { Margin = new Thickness(8, 4, 8, 7) };
@@ -99,10 +99,11 @@ public sealed partial class MainWindow
         _homeToolbar = homeTools; Grid.SetRow(homeTools, 1); root.Children.Add(homeTools);
         _projectHome = BuildProjectHome(); Grid.SetRow(_projectHome, 2); root.Children.Add(_projectHome);
         toolbar.IsVisible = workspace.IsVisible = false;
-        var status = new Grid { ColumnDefinitions = new("*,Auto"), ColumnSpacing = 16, Margin = new Thickness(10, 5) };
+        var status = new Grid { ColumnDefinitions = new("*,Auto,Auto"), ColumnSpacing = 16, Margin = new Thickness(10, 5) };
         _projectStatus.FontSize = 11; _projectStatus.TextWrapping = TextWrapping.NoWrap; _projectStatus.TextTrimming = TextTrimming.CharacterEllipsis;
         _status.FontSize = 11; _status.TextWrapping = TextWrapping.NoWrap; _status.TextTrimming = TextTrimming.CharacterEllipsis; _status.MaxWidth = 450;
         status.Children.Add(_projectStatus); Grid.SetColumn(_status, 1); status.Children.Add(_status);
+        Grid.SetColumn(_updateNotice, 2); status.Children.Add(_updateNotice);
         Grid.SetRow(status, 3); root.Children.Add(status); return root;
     }
     private static Control ToolSeparator() => new Border { Width = 1, Background = LineBrush, Margin = new Thickness(7, 7) };
