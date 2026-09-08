@@ -1,37 +1,54 @@
-name: Build published Windows artifact
+name: Create GitHub release
 
-run-name: Publish Windows x64 from ${{ github.ref_name }} (#${{ github.run_number }})
+run-name: Release v${{ inputs.version }} from ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
     inputs:
-      retention_days:
-        description: Artifact retention
+      version:
+        description: SemVer without a leading v (for example, 0.1.0 or 1.0.0-rc.1)
         required: true
-        default: "14"
-        type: choice
-        options:
-          - "7"
-          - "14"
-          - "30"
-          - "90"
+        type: string
+      prerelease:
+        description: Mark this as a prerelease
+        required: true
+        default: false
+        type: boolean
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: publish-windows-${{ github.ref }}
+  group: release-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish Windows x64
+  release:
+    name: Build and publish Windows x64 release
     runs-on: windows-2025
     timeout-minutes: 180
 
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+
+      - name: Validate release
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          SELECTED_REF: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if ($env:SELECTED_REF -ne $env:DEFAULT_BRANCH) {
+            throw "Releases must be created from the default branch '$env:DEFAULT_BRANCH'; selected '$env:SELECTED_REF'."
+          }
+          if ($env:RELEASE_VERSION -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$') {
+            throw "Version must be SemVer without a leading v, for example 0.1.0 or 1.0.0-rc.1."
+          }
+          $tag = "v$env:RELEASE_VERSION"
+          $existingTag = git ls-remote --tags origin "refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) { throw "Could not check existing tags." }
+          if ($existingTag) { throw "Tag $tag already exists." }
 
       - name: Install .NET SDK
         uses: actions/setup-dotnet@v6
@@ -40,22 +57,29 @@ jobs:
 
       - name: Build, test, and publish
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: >-
           ./scripts/build.ps1
           -Publish
-          -PublishDirectory artifacts/publish
+          -PublishDirectory "artifacts/package/Dolphin TAS Studio"
+          -Version $env:RELEASE_VERSION
 
-      - name: Verify complete distribution
+      - name: Verify and package distribution
+        id: package
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
+          $publishDirectory = 'artifacts/package/Dolphin TAS Studio'
           $required = @(
-            'artifacts/publish/TasStudio.App.exe',
-            'artifacts/publish/TasStudio.Worker.exe',
-            'artifacts/publish/native/TasStudio.LibretroHost.dll',
-            'artifacts/publish/native/dolphin_libretro.dll',
-            'artifacts/publish/system/dolphin-emu/Sys',
-            'artifacts/publish/NOTICE.md',
-            'artifacts/publish/LICENSE'
+            "$publishDirectory/TasStudio.App.exe",
+            "$publishDirectory/TasStudio.Worker.exe",
+            "$publishDirectory/native/TasStudio.LibretroHost.dll",
+            "$publishDirectory/native/dolphin_libretro.dll",
+            "$publishDirectory/system/dolphin-emu/Sys",
+            "$publishDirectory/NOTICE.md",
+            "$publishDirectory/LICENSE"
           )
           foreach ($path in $required) {
             if (-not (Test-Path -LiteralPath $path)) {
@@ -63,11 +87,39 @@ jobs:
             }
           }
 
-      - name: Upload published application
-        uses: actions/upload-artifact@v7
-        with:
-          name: dolphin-tas-studio-win-x64-${{ github.run_number }}
-          path: artifacts/publish/
-          if-no-files-found: error
-          retention-days: ${{ inputs.retention_days }}
-          compression-level: 6
+          $releaseDirectory = New-Item -ItemType Directory -Force -Path 'artifacts/release'
+          $archiveName = "Dolphin-TAS-Studio-$env:RELEASE_VERSION-win-x64.zip"
+          $archivePath = Join-Path $releaseDirectory.FullName $archiveName
+          Compress-Archive -LiteralPath $publishDirectory -DestinationPath $archivePath -CompressionLevel Optimal
+
+          $checksumPath = "$archivePath.sha256"
+          $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archiveName" | Set-Content -LiteralPath $checksumPath -Encoding utf8NoBOM
+
+          "archive_path=$archivePath" >> $env:GITHUB_OUTPUT
+          "checksum_path=$checksumPath" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+          RELEASE_ARCHIVE: ${{ steps.package.outputs.archive_path }}
+          RELEASE_CHECKSUM: ${{ steps.package.outputs.checksum_path }}
+        run: |
+          $tag = "v$env:RELEASE_VERSION"
+          $arguments = @(
+            'release', 'create', $tag,
+            $env:RELEASE_ARCHIVE,
+            $env:RELEASE_CHECKSUM,
+            '--target', $env:GITHUB_SHA,
+            '--title', "Dolphin TAS Studio $env:RELEASE_VERSION",
+            '--generate-notes'
+          )
+          if ($env:RELEASE_PRERELEASE -eq 'true') { $arguments += '--prerelease' }
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) { throw "Creating GitHub Release $tag failed." }
+
+          $releaseUrl = gh release view $tag --json url --jq .url
+          "### Published [$tag]($releaseUrl)" >> $env:GITHUB_STEP_SUMMARY
