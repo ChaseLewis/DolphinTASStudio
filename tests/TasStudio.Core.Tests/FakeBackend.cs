@@ -5,7 +5,7 @@ using TasStudio.Emulation;
 namespace TasStudio.Core.Tests;
 
 // Deliberately stateful: replay must actually restore and execute the intended inputs.
-internal sealed class FakeBackend : IEmulatorBackend
+internal class FakeBackend : IEmulatorBackend
 {
     private const int SnapshotBytes = sizeof(ulong) + sizeof(int);
     private int _accumulator;

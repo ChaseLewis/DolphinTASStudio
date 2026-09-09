@@ -41,6 +41,8 @@ public sealed partial class ExecutionService : IDisposable
     public Func<ControllerState> LiveInput { get; set; } = () => ControllerState.Neutral;
     public event Action<VideoFrame>? VideoReady;
     public event Action<short[], int>? AudioReady;
+    public event Action<IAudioSource?>? AudioSourceChanged;
+    private bool _realtimePlayback;
     public event Action<string>? StatusChanged;
     public event Action? Changed;
 
@@ -329,7 +331,17 @@ public sealed partial class ExecutionService : IDisposable
     private void RequireProject() { RequireLoaded(); if (!_hasProject) throw new InvalidOperationException("Create or open a TAS project first."); }
     private void ClearProject() { _initial = null; _projectStart = null; _inputs.Clear(); _events.Clear(); _hasProject = false; ClearWorkspace(); }
     private void InterruptSeek() => Interlocked.Increment(ref _seekInterruptVersion);
-    private void Pause() { _running = false; AudioReady?.Invoke([], 0); }
+    private void Pause()
+    {
+        _running = false;
+        if (_realtimePlayback)
+        {
+            _realtimePlayback = false;
+            (_backend as IRealtimeAudioBackend)!.StopRealtimePlayback();
+            AudioSourceChanged?.Invoke(null);
+        }
+        AudioReady?.Invoke([], 0);
+    }
     private void Notify(string message) { Publish(); StatusChanged?.Invoke(message); }
     private void Publish()
     {
@@ -359,23 +371,35 @@ public sealed partial class ExecutionService : IDisposable
     private void Loop()
     {
         var timer = Stopwatch.StartNew();
-        var nextFrame = TimeSpan.Zero;
+        var pacing = new PlaybackPacer();
+        void ExecuteCommand(Action command)
+        {
+            var wasRunning = _running;
+            command();
+            if (!wasRunning && _running) pacing.Restart(timer.Elapsed);
+        }
         try
         {
             while (!_commands.IsCompleted)
             {
                 if (_commands.TryTake(out var command, _running ? 0 : IdleWaitMilliseconds))
-                { command(); nextFrame = timer.Elapsed; }
+                    ExecuteCommand(command);
                 if (!_running) continue;
-                var remaining = nextFrame - timer.Elapsed;
+                var remaining = _realtimePlayback ? TimeSpan.Zero : pacing.Deadline - timer.Elapsed;
                 if (remaining > TimeSpan.Zero)
                 {
-                    if (_commands.TryTake(out command, Math.Max(1, (int)Math.Ceiling(remaining.TotalMilliseconds)))) command();
+                    if (_commands.TryTake(out command, Math.Max(1, (int)Math.Ceiling(remaining.TotalMilliseconds)))) ExecuteCommand(command);
                     continue;
                 }
                 var emulatedBefore = _backend.EmulatedSeconds;
                 try
                 {
+                    if (!_realtimePlayback && _backend is IRealtimeAudioBackend realtime)
+                    {
+                        var source = realtime.StartRealtimePlayback();
+                        _realtimePlayback = true;
+                        AudioSourceChanged?.Invoke(source);
+                    }
                     if (!_playbackOnly || _backend.Position < (ulong)_inputs.Count) Step();
                     if (_playbackOnly && _backend.Position >= (ulong)_inputs.Count) { Pause(); Notify("End of timeline"); }
                 }
@@ -383,12 +407,10 @@ public sealed partial class ExecutionService : IDisposable
                 var elapsed = _backend.EmulatedSeconds - emulatedBefore;
                 var frameDuration = TimeSpan.FromSeconds(double.IsFinite(elapsed) && elapsed > 0 ? elapsed :
                     1 / Math.Clamp(_backend.FramesPerSecond, MinimumFramesPerSecond, MaximumFramesPerSecond));
-                nextFrame += frameDuration;
-                // Retain the normal deadline through work; avoid a catch-up burst after a stall.
-                if (nextFrame < timer.Elapsed - frameDuration) nextFrame = timer.Elapsed;
+                pacing.Advance(frameDuration, timer.Elapsed);
             }
         }
-        finally { ClearAutomaticCheckpoints(); ClearNamedStates(); _backend.Dispose(); }
+        finally { Pause(); ClearAutomaticCheckpoints(); ClearNamedStates(); _backend.Dispose(); }
     }
 
     public void Dispose()

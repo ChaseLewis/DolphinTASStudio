@@ -30,3 +30,8 @@ TAS_API int tas_memory(tas_host* host, uint32_t address, void* bytes, size_t siz
 TAS_API size_t tas_video(tas_host* host, void* bytes, size_t capacity, unsigned* width, unsigned* height, uint64_t* sequence);
 // Read and consume interleaved signed 16-bit stereo samples. Return sample count, not frame count.
 TAS_API size_t tas_audio(tas_host* host, int16_t* samples, size_t capacity, unsigned* rate);
+// Owner thread, between advances. Returns sample rate, or zero on failure.
+TAS_API unsigned tas_audio_playback(tas_host* host, int enabled);
+// Exception to owner-thread rule: one audio consumer may mix concurrently with
+// tas_step/replay. Caller must stop/join that consumer before destroying the host.
+TAS_API size_t tas_mix_audio(tas_host* host, int16_t* samples, size_t frames);

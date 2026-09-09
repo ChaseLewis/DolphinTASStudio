@@ -13,6 +13,12 @@ if (args.Length < 2) throw new ArgumentException("Usage: integration <rom> <outp
 var rom = Path.GetFullPath(args[0]);
 var output = Path.GetFullPath(args[1]);
 Directory.CreateDirectory(output);
+if (args.Contains("realtime-playback"))
+{
+    string? Option(string name) => Array.IndexOf(args, name) is var index && index >= 0 ? args[index + 1] : null;
+    RealtimePlayback.Run(rom, output, Option("--movie"), int.Parse(Option("--start") ?? "0"), int.Parse(Option("--groups") ?? "600"));
+    return;
+}
 if (args.Contains("manual-play-create") || args.Contains("manual-play-restore"))
 {
     await ManualPlay.Run(rom, output, args.Contains("manual-play-restore"));

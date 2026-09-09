@@ -6,8 +6,9 @@ repository is provided under GPL-2.0-or-later; the full GPL version 2 text is in
 
 The native backend is a modified [Dolphin Libretro](https://github.com/libretro/dolphin)
 checkout pinned to `e1e6d25fa1392b7d1bc05bf800c71b807a2bd2e0`.
-Its modifications are retained in `native/patches/0001-tas-contract.patch` and
-`native/patches/0002-tas-trace.patch`. Source retrieval and normal builds use
+Its modifications are retained in `native/patches/`: `0001-tas-contract.patch`,
+`0002-tas-trace.patch`, `0003-play-memory-card-size.patch`,
+`0004-d3d-logic-ops.patch`, and `0005-realtime-audio.patch`. Source retrieval and normal builds use
 `scripts/build.ps1`; optional tracing uses `scripts/build-trace.ps1`.
 Dolphin's `COPYING` and `LICENSES` describe its component licenses and are copied
 into local published builds. Preserve those notices and corresponding source,

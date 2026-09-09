@@ -1,0 +1,17 @@
+diff --git a/Source/Core/VideoBackends/D3D/D3DMain.cpp b/Source/Core/VideoBackends/D3D/D3DMain.cpp
+index fda563f..62d0470 100644
+--- a/Source/Core/VideoBackends/D3D/D3DMain.cpp
++++ b/Source/Core/VideoBackends/D3D/D3DMain.cpp
+@@ -112,9 +112,9 @@ void VideoBackend::FillBackendInfo()
+   g_backend_info.bSupportsTextureQueryLevels = true;
+   g_backend_info.bSupportsLodBiasInSampler = true;
+ #ifdef __LIBRETRO__
+-  if (Common::is_uwp())
+-    g_backend_info.bSupportsLogicOp = false;
+-  else
++  // Query the frontend's device too; leaving this unset silently approximates logic ops.
++  g_backend_info.bSupportsLogicOp =
++      !Common::is_uwp() && D3D::SupportsLogicOp(g_Config.iAdapter);
+ #else
+   g_backend_info.bSupportsLogicOp = D3D::SupportsLogicOp(g_Config.iAdapter);
+ #endif
