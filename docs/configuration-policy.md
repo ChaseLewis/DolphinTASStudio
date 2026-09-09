@@ -20,6 +20,38 @@ The user can optionally replay retained inputs to the selected input after Apply
 
 Start UTC is an initial clock seed, not an instruction to overwrite the clock after each restore. State zero is the supported core's post-boot boundary, not a claim of exact hardware power-on emulation. Retained execution events still execute at their recorded boundaries, including any explicit later RTC change.
 
+## Public game compatibility settings
+
+Dolphin publishes its per-game overrides in the
+[GameSettings directory](https://github.com/dolphin-emu/dolphin/tree/master/Data/Sys/GameSettings).
+Studio ships the [pinned Libretro copy](https://github.com/libretro/dolphin/tree/e1e6d25fa1392b7d1bc05bf800c71b807a2bd2e0/Data/Sys/GameSettings)
+under `system/dolphin-emu/Sys/GameSettings`. Dolphin resolves general, game-prefix,
+full game ID, and revision-specific INIs, with local `User/GameSettings` overrides
+above bundled settings. The saved base `GFX.ini` alone does not show the effective
+game settings.
+
+For [Skies of Arcadia Legends (`GEA.ini`)](https://github.com/dolphin-emu/dolphin/blob/master/Data/Sys/GameSettings/GEA.ini),
+the bundled overrides are `CPUThread = False`,
+`SafeTextureCacheColorSamples = 512`, and `EFBToTextureEnable = False`.
+The latter allows EFB copies to RAM instead of keeping them only as GPU textures.
+These match the standalone Dolphin settings checked on September 9, 2026.
+
+Game overrides cannot repair missing renderer capabilities. Patch
+`0004-d3d-logic-ops.patch` restores the desktop Libretro D3D11 capability query
+used by standalone Dolphin. Previously, a preprocessor branch left logic-operation
+support unset even on a capable frontend device, triggering inaccurate blending
+approximations. UWP retains its existing disabled setting.
+
+Validation on September 9, 2026: the existing `boot-preview` integration mode ran
+2,400 presentation advances of Skies with both the previous development DLL and
+the patched DLL in separate profiles. The previous log contained three
+logic-operation approximation warnings and four blend-state failure messages
+(including repeated popup text); the patched log contained neither. Native
+`configuration-create` verified that bundled compatibility overrides still win.
+The ordinary integration run and fresh-process `restore` matched terminal RAM
+and all 600 replayed video observations. These checks cover startup and replay;
+the reported Alfonso ship discoloration still needs a visual recheck in that scene.
+
 ## Current editable allowlist
 
 `EmulationConfiguration` validates explicit enum choices and booleans. Unknown keys and unsupported values are rejected. Unspecified keys receive the defaults in [ProjectConfiguration.cs](../src/TasStudio.Emulation/ProjectConfiguration.cs).

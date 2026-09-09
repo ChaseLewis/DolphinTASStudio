@@ -1,10 +1,12 @@
 function Install-CorePatches([string]$CorePath, [string]$PatchDirectory) {
     Install-BaseCorePatches $CorePath $PatchDirectory
-    $playPatch = Join-Path $PatchDirectory '0003-play-memory-card-size.patch'
-    & git -C $CorePath apply --reverse --check $playPatch 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Invoke-Checked git @('-C', $CorePath, 'apply', '--check', $playPatch)
-        Invoke-Checked git @('-C', $CorePath, 'apply', $playPatch)
+    foreach ($name in @('0003-play-memory-card-size.patch', '0004-d3d-logic-ops.patch', '0005-realtime-audio.patch')) {
+        $patch = Join-Path $PatchDirectory $name
+        & git -C $CorePath apply --reverse --check $patch 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Invoke-Checked git @('-C', $CorePath, 'apply', '--check', $patch)
+            Invoke-Checked git @('-C', $CorePath, 'apply', $patch)
+        }
     }
 }
 

@@ -1,0 +1,152 @@
+diff --git a/Source/Core/AudioCommon/Mixer.cpp b/Source/Core/AudioCommon/Mixer.cpp
+index a57b602..9111534 100644
+--- a/Source/Core/AudioCommon/Mixer.cpp
++++ b/Source/Core/AudioCommon/Mixer.cpp
+@@ -60,6 +60,32 @@ void Mixer::DoState(PointerWrap& p)
+     mixer.DoState(p);
+ }
+ 
++void Mixer::ClearOutput()
++{
++  m_dma_mixer.ClearOutput();
++  m_streaming_mixer.ClearOutput();
++  for (auto& mixer : m_wiimote_speaker_mixers)
++    mixer.ClearOutput();
++  m_skylander_portal_mixer.ClearOutput();
++  for (auto& mixer : m_gba_mixers)
++    mixer.ClearOutput();
++}
++
++void Mixer::MixerFifo::ClearOutput()
++{
++  m_next_buffer = {};
++  m_next_buffer_index = 0;
++  m_current_index = 0;
++  m_front = {};
++  m_back = {};
++  m_queue_head.store(0);
++  m_queue_tail.store(0);
++  m_queue_fading.store(false);
++  m_queue_looping.store(false);
++  m_fade_volume = 0;
++  m_quantization_error = {};
++}
++
+ // Executed from sound stream thread
+ void Mixer::MixerFifo::Mix(s16* samples, std::size_t num_samples)
+ {
+diff --git a/Source/Core/AudioCommon/Mixer.h b/Source/Core/AudioCommon/Mixer.h
+index aca334b..8b7dd52 100644
+--- a/Source/Core/AudioCommon/Mixer.h
++++ b/Source/Core/AudioCommon/Mixer.h
+@@ -22,6 +22,8 @@ public:
+   ~Mixer();
+ 
+   void DoState(PointerWrap& p);
++  // Call only with both producer and consumer stopped. Does not change emulated audio state.
++  void ClearOutput();
+ 
+   // Called from audio threads
+   std::size_t Mix(s16* samples, std::size_t numSamples);
+@@ -109,6 +111,7 @@ private:
+     {
+     }
+     void DoState(PointerWrap& p);
++    void ClearOutput();
+ 
+     DOLPHIN_FORCE_INLINE void PushSample(s16 left, s16 right)
+     {
+diff --git a/Source/Core/Core/CoreTiming.h b/Source/Core/Core/CoreTiming.h
+index 29d636e..1727776 100644
+--- a/Source/Core/Core/CoreTiming.h
++++ b/Source/Core/Core/CoreTiming.h
+@@ -105,6 +105,8 @@ public:
+   TimePoint GetTargetHostTime(s64 target_cycle);
+ 
+   void RefreshConfig();
++  // Host playback can resume without changing the emulated CPU run state.
++  void ResetHostTiming() { ResetThrottle(GetTicks()); }
+ 
+   void DoState(PointerWrap& p);
+ 
+diff --git a/Source/Core/DolphinLibretro/Audio.cpp b/Source/Core/DolphinLibretro/Audio.cpp
+index a966980..10d9485 100644
+--- a/Source/Core/DolphinLibretro/Audio.cpp
++++ b/Source/Core/DolphinLibretro/Audio.cpp
+@@ -3,6 +3,8 @@
+ #include "Common/Logging/Log.h"
+ #include "Common/Thread.h"
+ #include "Core/Config/MainSettings.h"
++#include "Core/CoreTiming.h"
++#include "Core/Core.h"
+ #include "AudioCommon/AudioCommon.h"
+ #include "VideoCommon/Present.h"
+ #include "DolphinLibretro/Common/Globals.h"
+@@ -19,6 +21,8 @@ static std::atomic<bool> g_buf_underrun{false};
+ static int g_use_call_back_audio{0};
+ static bool g_audio_state_cb{false};
+ static bool g_is_fast_forwarding{false};
++// Written only between advances with the host's audio consumer excluded.
++static bool g_tas_pull_audio{false};
+ 
+ enum CallBackMode
+ {
+@@ -76,6 +80,7 @@ unsigned int GetActiveSampleRate()
+ 
+ void Reset()
+ {
++  g_tas_pull_audio = false;
+   g_use_call_back_audio = Libretro::Options::GetCached<int>(Libretro::Options::audio::CALL_BACK_AUDIO,
+     CallBackMode::PUSH_SAMPLES);
+   g_audio_state_cb = false;
+@@ -152,6 +157,8 @@ bool Stream::IsValid()
+ 
+ void Stream::Update(unsigned int num_samples)
+ {
++  if (g_tas_pull_audio)
++    return; // The audio device consumes the mixer independently of retro_run.
+   if (g_use_call_back_audio != CallBackMode::PUSH_SAMPLES) {
+     return;
+   }
+@@ -454,6 +461,41 @@ void retroarch_audio_buffer_status_cb(bool active,
+ // retroarch hooks
+ extern "C" {
+ 
++#ifdef _WIN32
++#define TAS_AUDIO_EXPORT __declspec(dllexport)
++#else
++#define TAS_AUDIO_EXPORT __attribute__((visibility("default")))
++#endif
++
++  // Owner thread only, between retro_run calls; caller excludes concurrent Mix.
++  TAS_AUDIO_EXPORT unsigned dolphin_tas_audio_playback(bool enabled)
++  {
++    auto& system = Core::System::GetInstance();
++    auto* stream = system.GetSoundStream();
++    if (!stream || !stream->GetMixer())
++      return 0;
++    Libretro::Audio::g_tas_pull_audio = enabled;
++    // Libretro boot disables Dolphin's throttler independently of the speed setting.
++    Core::SetIsThrottlerTempDisabled(!enabled);
++    Config::SetCurrent(Config::MAIN_EMULATION_SPEED, enabled ? 1.0f : 0.0f);
++    Config::SetCurrent(Config::MAIN_AUDIO_FILL_GAPS, enabled);
++    auto& timing = system.GetCoreTiming();
++    timing.RefreshConfig();
++    timing.ResetHostTiming();
++    stream->GetMixer()->ClearOutput();
++    return stream->GetMixer()->GetSampleRate();
++  }
++
++  // One audio-device consumer, concurrent with the emulation producer. The host
++  // excludes state operations, mode changes and teardown while this call runs.
++  TAS_AUDIO_EXPORT size_t dolphin_tas_mix_audio(short* samples, size_t frames)
++  {
++    auto* stream = Core::System::GetInstance().GetSoundStream();
++    if (!Libretro::Audio::g_tas_pull_audio || !stream || !stream->GetMixer())
++      return 0;
++    return stream->GetMixer()->Mix(samples, frames);
++  }
++
+   void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb)
+   {
+     Libretro::Audio::batch_cb = cb;

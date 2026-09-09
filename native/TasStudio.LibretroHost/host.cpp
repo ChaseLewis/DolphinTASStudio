@@ -81,6 +81,9 @@ struct tas_host {
   bool (*begin_polls)(const tas_poll*, size_t, bool) = nullptr;
   bool (*end_polls)() = nullptr;
   size_t (*copy_polls)(tas_poll*, size_t) = nullptr;
+  unsigned (*audio_playback)(bool) = nullptr;
+  size_t (*mix_audio)(int16_t*, size_t) = nullptr;
+  bool pull_audio = false;
   template<class T> void bind(T& function, const char* name) {
     function = reinterpret_cast<T>(GetProcAddress(library, name));
     if (!function) throw std::runtime_error(std::string("Missing core export: ") + name);
@@ -265,6 +268,9 @@ tas_host* tas_create(const char* core, const char* system, const char* saves, in
     h->bind(h->begin_polls, "dolphin_tas_begin_polls");
     h->bind(h->end_polls, "dolphin_tas_end_polls");
     h->bind(h->copy_polls, "dolphin_tas_copy_polls");
+    // Optional for existing experiment runtimes; required when playback is enabled.
+    h->audio_playback = reinterpret_cast<decltype(h->audio_playback)>(GetProcAddress(h->library, "dolphin_tas_audio_playback"));
+    h->mix_audio = reinterpret_cast<decltype(h->mix_audio)>(GetProcAddress(h->library, "dolphin_tas_mix_audio"));
     check_hr(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
       nullptr, 0, D3D11_SDK_VERSION, &h->device, &h->d3d.featureLevel, &h->context), "Create D3D11 device");
     if (h->d3d.featureLevel < D3D_FEATURE_LEVEL_11_0)
@@ -358,16 +364,18 @@ int tas_replay_step(tas_host* h, const tas_pad* fallback, const tas_poll* polls,
 size_t tas_polls(tas_host* h, tas_poll* polls, size_t capacity) {
   size_t result = 0; guarded(h, [&] { h->require_loaded(); result = h->copy_polls(polls, capacity); }); return result;
 }
-int tas_reset(tas_host* h) { return guarded(h, [&] { h->require_loaded(); h->reset(); }); }
+int tas_reset(tas_host* h) { return guarded(h, [&] { h->require_loaded(); std::lock_guard lock(h->audio_mutex); h->reset(); }); }
 uint64_t tas_fields(tas_host* h) { uint64_t result = 0; guarded(h, [&] { h->require_loaded(); result = h->fields(); }); return result; }
 uint64_t tas_presentations(tas_host* h) { uint64_t result = 0; guarded(h, [&] { h->require_loaded(); result = h->presentations(); }); return result; }
 uint64_t tas_ticks(tas_host* h) { uint64_t result = 0; guarded(h, [&] { h->require_loaded(); result = h->ticks(); }); return result; }
 double tas_fps(tas_host* h) { double result = 0; guarded(h, [&] { result = h->av.timing.fps; }); return result; }
-size_t tas_state_size(tas_host* h) { size_t size = 0; guarded(h, [&] { h->require_loaded(); size = h->serialize_size(); }); return size; }
+size_t tas_state_size(tas_host* h) { size_t size = 0; guarded(h, [&] { h->require_loaded(); std::lock_guard lock(h->audio_mutex); size = h->serialize_size(); }); return size; }
 int tas_save(tas_host* h, void* bytes, size_t size) { return guarded(h, [&] {
+  std::lock_guard lock(h->audio_mutex);
   h->require_loaded(); if (!bytes || size < h->serialize_size() || !h->serialize(bytes, size)) throw std::runtime_error("Savestate serialization failed.");
 }); }
 int tas_restore(tas_host* h, const void* bytes, size_t size) { return guarded(h, [&] {
+  std::lock_guard lock(h->audio_mutex);
   h->require_loaded();
   if (!bytes || !size || size > MaximumStateBytes) throw std::runtime_error("Invalid savestate buffer size.");
   const auto rollback_size = h->serialize_size();
@@ -378,7 +386,7 @@ int tas_restore(tas_host* h, const void* bytes, size_t size) { return guarded(h,
     h->faulted = true;
     try { h->faulted = !h->unserialize(rollback.data(), rollback.size()); }
     catch (...) { /* Keep the backend faulted if native recovery also throws. */ }
-    std::lock_guard lock(h->audio_mutex); h->samples.clear();
+    h->samples.clear();
   };
   bool restored = false;
   try { restored = h->unserialize(bytes, size); }
@@ -391,7 +399,7 @@ int tas_restore(tas_host* h, const void* bytes, size_t size) { return guarded(h,
     throw std::runtime_error(h->faulted ? "Savestate restoration and recovery failed; reopen the game." :
       "Savestate restoration failed; the previous state was recovered.");
   }
-  std::lock_guard lock(h->audio_mutex); h->samples.clear();
+  h->samples.clear();
 }); }
 int tas_memory(tas_host* h, uint32_t address, void* bytes, size_t size, int write) { return guarded(h, [&] {
   h->require_loaded();
@@ -425,4 +433,29 @@ size_t tas_audio(tas_host* h, int16_t* samples, size_t capacity, unsigned* rate)
     if (samples && count) { memcpy(samples, h->samples.data(), count * sizeof(int16_t)); h->samples.erase(h->samples.begin(), h->samples.begin() + count); }
   });
   return count;
+}
+
+unsigned tas_audio_playback(tas_host* h, int enabled) {
+  unsigned rate = 0;
+  guarded(h, [&] {
+    h->require_loaded();
+    std::lock_guard lock(h->audio_mutex);
+    if (!h->audio_playback || !h->mix_audio)
+      throw std::runtime_error("Rebuild Dolphin to enable device-driven audio playback.");
+    rate = h->audio_playback(enabled != 0);
+    if (!rate) throw std::runtime_error("Dolphin audio mixer is unavailable.");
+    h->pull_audio = enabled != 0;
+    h->samples.clear();
+  });
+  return rate;
+}
+
+size_t tas_mix_audio(tas_host* h, int16_t* samples, size_t frames) {
+  if (!h || !samples || frames > MaximumAudioSamples / StereoChannels) return 0;
+  // No guarded(): audio consumption is intentionally independent of the owner.
+  // Do not write the owner's error string from the audio thread.
+  try {
+    std::lock_guard lock(h->audio_mutex);
+    return h->pull_audio ? h->mix_audio(samples, frames) : 0;
+  } catch (...) { return 0; }
 }

@@ -7,7 +7,7 @@ using TasStudio.Emulation;
 
 namespace TasStudio.Dolphin;
 
-public sealed class DolphinBackend : IEmulatorBackend
+public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend
 {
     private const string IdentityPrefix = "dolphin-tas-abi3/";
     private const int MaximumStateBytes = 256 * 1024 * 1024;
@@ -21,6 +21,7 @@ public sealed class DolphinBackend : IEmulatorBackend
     private ulong _lastVideoSequence;
     private VideoFrame? _preview;
     private readonly short[] _audio = new short[AudioBufferSamples];
+    private DolphinAudioSource? _audioSource;
     public string Identity { get; private set; } = "Dolphin TAS ABI 3";
     public ulong LastStepFields { get; private set; }
     public InputPollFrame? LastInputPollFrame { get; private set; }
@@ -187,12 +188,49 @@ public sealed class DolphinBackend : IEmulatorBackend
 
     public void Stop()
     {
+        StopRealtimePlayback();
         if (_host != 0) Native.tas_destroy(_host);
         _host = 0; _position = 0; _lastVideoSequence = 0; _preview = null;
         _profileLease?.Dispose(); _profileLease = null;
         AudioReady?.Invoke([], 0);
     }
     public void Dispose() => Stop();
+
+    public IAudioSource StartRealtimePlayback()
+    {
+        RequireLoaded();
+        if (_audioSource != null) return _audioSource;
+        var rate = Native.tas_audio_playback(_host, 1);
+        if (rate == 0) throw new InvalidOperationException(Error());
+        return _audioSource = new DolphinAudioSource(_host, checked((int)rate));
+    }
+
+    public void StopRealtimePlayback()
+    {
+        if (_audioSource == null) return;
+        // Retire the lease before touching mode or host lifetime. A device may
+        // retain an old provider briefly; it can only read silence after this.
+        _audioSource.Retire();
+        _audioSource = null;
+        if (Native.tas_audio_playback(_host, 0) == 0) throw new InvalidOperationException(Error());
+    }
+
+    private sealed class DolphinAudioSource(nint host, int sampleRate) : IAudioSource
+    {
+        private readonly object _gate = new();
+        private nint _host = host;
+        public int SampleRate { get; } = sampleRate;
+        public void Retire() { lock (_gate) _host = 0; }
+        public void Read(short[] samples, int count)
+        {
+            if (count < 0 || count > samples.Length || count % 2 != 0) throw new ArgumentOutOfRangeException(nameof(count));
+            lock (_gate)
+            {
+                var frames = _host == 0 ? 0 : checked((int)Native.tas_mix_audio(_host, samples, (nuint)(count / 2)));
+                Array.Clear(samples, frames * 2, count - frames * 2);
+            }
+        }
+    }
     private void RequireLoaded() { if (!IsLoaded) throw new InvalidOperationException("Open a game first."); }
     private string Error() => Marshal.PtrToStringUTF8(Native.tas_error(_host)) ?? "Unknown native error.";
     private void Check(int success) { if (success == 0) throw new InvalidOperationException(Error()); }
@@ -208,6 +246,7 @@ public sealed class DolphinBackend : IEmulatorBackend
             _preview = new VideoFrame((int)width, (int)height, pixels, (long)sequence);
             VideoReady?.Invoke(_preview);
         }
+        if (_audioSource != null) return; // The device consumes Dolphin's mixer directly.
         var count = Native.tas_audio(_host, _audio, (nuint)_audio.Length, out var rate);
         if (count > 0) AudioReady?.Invoke(_audio[..(int)count], (int)rate);
     }
@@ -215,6 +254,8 @@ public sealed class DolphinBackend : IEmulatorBackend
     private static class Native
     {
         private const string Library = "TasStudio.LibretroHost";
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern uint tas_audio_playback(nint host, int enabled);
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern nuint tas_mix_audio(nint host, [Out] short[] samples, nuint frames);
         static Native() => NativeLibrary.SetDllImportResolver(typeof(Native).Assembly, Resolve);
         private static nint Resolve(string name, Assembly assembly, DllImportSearchPath? path) =>
             name == Library ? NativeLibrary.Load(Path.Combine(AppContext.BaseDirectory, "native", Library + ".dll")) : 0;

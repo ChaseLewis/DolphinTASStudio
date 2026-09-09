@@ -63,6 +63,7 @@ public sealed partial class MainWindow : Window
         _execution.LiveInput = () => _execution.IsManualPlay ? _input.Read() : _turboInput.Apply(_input.Read(), _execution.Position);
         _execution.VideoReady += frame => Interlocked.Exchange(ref _pendingVideo, frame);
         _execution.AudioReady += _audio.Add;
+        _execution.AudioSourceChanged += _audio.SetSource;
         _execution.StatusChanged += message => Dispatcher.UIThread.Post(() => _status.Text = message);
         _audio.Failed += message => Dispatcher.UIThread.Post(() => _status.Text = message);
         _audio.SetVolume(_settings.Volume, _settings.Muted);
