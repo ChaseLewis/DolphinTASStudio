@@ -9,8 +9,10 @@ internal sealed class ExperimentAssembly : AssemblyLoadContext, IDisposable
 {
     private readonly AssemblyDependencyResolver _resolver;
     private readonly string _path;
-    public ExperimentAssembly(string path) : base(isCollectible: true)
-    { _path = Path.GetFullPath(path); _resolver = new(_path); }
+    private readonly bool _loadInMemory;
+    private Assembly? _assembly;
+    public ExperimentAssembly(string path, bool loadInMemory = false) : base(isCollectible: true)
+    { _path = Path.GetFullPath(path); _resolver = new(_path); _loadInMemory = loadInMemory; }
     public IExperiment Create(string? typeName) => (IExperiment)(Activator.CreateInstance(FindExperimentType(typeName))
         ?? throw new InvalidDataException("Experiment needs a public parameterless constructor."));
 
@@ -24,7 +26,7 @@ internal sealed class ExperimentAssembly : AssemblyLoadContext, IDisposable
 
     private Type FindExperimentType(string? typeName)
     {
-        var assembly = LoadFromAssemblyPath(_path);
+        var assembly = _assembly ??= LoadManagedAssembly(_path);
         var candidates = assembly.GetExportedTypes().Where(t => !t.IsAbstract && !t.ContainsGenericParameters && typeof(IExperiment).IsAssignableFrom(t)
             && (typeName == null || t.FullName == typeName)).ToArray();
         if (candidates.Length != 1) throw new InvalidDataException($"Select one public IExperiment class by its full type name; found {candidates.Length}.");
@@ -40,7 +42,15 @@ internal sealed class ExperimentAssembly : AssemblyLoadContext, IDisposable
                 return shared;
             }
         var dependency = _resolver.ResolveAssemblyToPath(name);
-        return dependency == null ? null : LoadFromAssemblyPath(dependency);
+        return dependency == null ? null : LoadManagedAssembly(dependency);
+    }
+    private Assembly LoadManagedAssembly(string path)
+    {
+        if (!_loadInMemory) return LoadFromAssemblyPath(path);
+        // Schema readers can outlive disposal through reflection/serializer caches.
+        // Avoid mapping batch DLLs into memory, which locks them on Windows until GC.
+        using var stream = File.OpenRead(path);
+        return LoadFromStream(stream);
     }
     protected override IntPtr LoadUnmanagedDll(string name)
     { var path = _resolver.ResolveUnmanagedDllToPath(name); return path == null ? IntPtr.Zero : LoadUnmanagedDllFromPath(path); }

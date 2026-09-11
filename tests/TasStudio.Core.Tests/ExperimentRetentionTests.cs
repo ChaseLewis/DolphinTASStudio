@@ -60,8 +60,7 @@ public sealed class ExperimentRetentionTests
     {
         using var files = new TestWorkspace();
         var batch = Path.Combine(files.DirectoryPath, "batch");
-        try { RunWithFailedCommit(batch); }
-        finally { GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); }
+        RunWithFailedCommit(batch);
         Assert.True(File.Exists(Path.Combine(batch, "run-00001", "profile", "keep.txt")));
         Assert.True(File.Exists(Path.Combine(batch, "run-00001", "writer-error.json")));
         using var db = Open(batch);
@@ -69,7 +68,6 @@ public sealed class ExperimentRetentionTests
         Assert.Equal(0L, query.ExecuteScalar());
     }
 
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private static void RunWithFailedCommit(string batch)
     {
         using var cancellation = new CancellationTokenSource();
