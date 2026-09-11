@@ -6,6 +6,33 @@ namespace TasStudio.Core.Tests;
 
 public sealed class ExperimentWriterTests
 {
+    [Fact]
+    public void SchemaDiscoveryLeavesAssemblyAndDependenciesUnlockedWhileTypesAreAlive()
+    {
+        using var files = new TestWorkspace();
+        var source = typeof(TasStudio.Experiment.Fixtures.TypedExperiment).Assembly.Location;
+        var assemblyPath = files.FilePath(Path.GetFileName(source));
+        foreach (var path in Directory.EnumerateFiles(Path.GetDirectoryName(source)!))
+            if (Path.GetExtension(path) is ".dll" or ".json")
+                File.Copy(path, files.FilePath(Path.GetFileName(path)));
+
+        using var assembly = new ExperimentAssembly(assemblyPath, loadInMemory: true);
+        var type = assembly.GetResultType("TasStudio.Experiment.Fixtures.TypedExperiment")!;
+        Assert.Same(type, assembly.GetResultType("TasStudio.Experiment.Fixtures.TypedExperiment"));
+        var dependency = assembly.LoadFromAssemblyName(new System.Reflection.AssemblyName("Skies"));
+        var schema = new ExperimentResultSchema(type);
+        Assert.Contains("Score", schema.CreateTableSql);
+
+        // Exclusive access must work even before Unload/GC, with reflected types still alive.
+        foreach (var path in new[] { assemblyPath, files.FilePath("Skies.dll") })
+        {
+            using var exclusive = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        }
+        GC.KeepAlive(schema);
+        GC.KeepAlive(dependency);
+        GC.KeepAlive(type);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -25,11 +52,8 @@ public sealed class ExperimentWriterTests
         }
         Assert.InRange(ExperimentFiles.Read<ExperimentResult[]>(Path.Combine(batch, "results.json")).Length, 1, 4);
         Assert.False(File.Exists(Path.Combine(batch, "writer-errors.json")));
-        // Collectible load contexts release Windows DLL handles when collected, not at Unload().
-        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }
 
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private static void RunCancelledBatch(string batch, bool headless)
     {
         using var cancellation = new CancellationTokenSource();

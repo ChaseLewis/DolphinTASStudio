@@ -168,7 +168,7 @@ public static class ExperimentRunner
         using var batchLock = new FileStream(Path.Combine(batchDirectory, ".runner.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         var definition = ExperimentFiles.Read<ExperimentDefinition>(Path.Combine(batchDirectory, "experiment.json"));
         if (definition.AssemblyPath == null) throw new InvalidDataException("Cleanup requires typed SQLite results.");
-        using var assembly = new ExperimentAssembly(Path.Combine(batchDirectory, "assembly", Path.GetFileName(definition.AssemblyPath)));
+        using var assembly = new ExperimentAssembly(Path.Combine(batchDirectory, "assembly", Path.GetFileName(definition.AssemblyPath)), loadInMemory: true);
         var type = assembly.GetResultType(definition.TypeName) ?? throw new InvalidDataException("Cleanup requires typed SQLite results.");
         await using var sqlite = new SqliteExperimentWriter(type, resume: true);
         await sqlite.InitializeAsync(new(batchDirectory, definition.Name, definition.Trials.Length), token);
@@ -230,7 +230,7 @@ public static class ExperimentRunner
             File.Delete(Path.Combine(batchDirectory, "cancel"));
         }
         var experimentAssembly = definition.AssemblyPath == null ? null : resume ? definition.AssemblyPath : SnapshotAssembly(definition.AssemblyPath, Path.Combine(batchDirectory, "assembly"));
-        using var writerAssembly = experimentAssembly == null ? null : new ExperimentAssembly(experimentAssembly);
+        using var writerAssembly = experimentAssembly == null ? null : new ExperimentAssembly(experimentAssembly, loadInMemory: true);
         var resultType = writerAssembly?.GetResultType(definition.TypeName);
         if (resume && resultType == null) throw new InvalidDataException("Resume requires typed SQLite results.");
         var sqlite = resultType == null ? null : new SqliteExperimentWriter(resultType, resume);
