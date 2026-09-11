@@ -284,6 +284,20 @@ See [input/recovery behavior](docs/input-workflow-and-recovery.md),
 
 ## C# experiments
 
+Right-click a saved state in the timeline and choose **Experiment → Create
+experiment…** to name and scaffold a C# workspace under the project's `experiments/`
+folder, initialized to start at that state. The same menu offers **Rename experiment…**
+and **Remove experiment**; removal preserves code and old runs for recovery.
+Edit its code/config, then use the
+state menu to run it or open its folder. **Attach existing experiment** reuses a
+recipe at a replacement state after redoing a section; previous runs keep their
+own snapshots. See [state experiment workflows](docs/csharp-experiments.md#from-a-saved-state-in-studio).
+
+Configure a code editor and default library references under **Options →
+Configuration → Interface → Experiments**. Editor detection prefers VS Code,
+then Visual Studio. New experiments created in Studio automatically reference
+the selected C# projects or compiled .NET DLLs.
+
 C#/.NET class libraries are the supported scripting workflow. Author them in VS Code
 or another C# editor. The deprecated embedded Lua editor and runtime have been removed.
 

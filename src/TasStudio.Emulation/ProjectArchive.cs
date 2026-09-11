@@ -8,6 +8,7 @@ namespace TasStudio.Emulation;
 public enum ExecutionEventKind { MemoryWrite, Reset }
 public enum ProjectStartKind { CapturedState, PowerOn, SaveState }
 public sealed record ProjectStart(ProjectStartKind Kind, string? SourceName = null, ulong SourcePosition = 0);
+public sealed record EmulatorRuntime(string BackendIdentity, string? ConfigurationIdentity);
 public sealed record ExecutionEvent(ulong Position, ExecutionEventKind Kind, uint Address = 0, byte[]? Bytes = null);
 public sealed record ArchiveMetadata(int Version, string Kind, string BackendIdentity, string GamePath,
     string GameHash, int InternalResolution, bool DspHle, ulong Position, ulong InitialPosition,
@@ -17,6 +18,8 @@ public sealed record ArchiveMetadata(int Version, string Kind, string BackendIde
     public string? HistoryHash { get; init; }
     public EmulationConfiguration? Configuration { get; init; }
     public string? ConfigurationIdentity { get; init; }
+    // Provenance, not a claim that recordings or experiment results were reverified.
+    public EmulatorRuntime[] RuntimeHistory { get; init; } = [];
     public CheckpointPolicy? Checkpoints { get; init; }
     public ProjectStart? Start { get; init; }
     public TimelineTag[] Tags { get; init; } = [];
@@ -95,6 +98,9 @@ public static class ProjectArchive
 
     internal static void ValidateMetadata(ArchiveMetadata metadata, string expectedKind)
     {
+        if (metadata.RuntimeHistory == null || metadata.RuntimeHistory.Length > 10000 ||
+            metadata.RuntimeHistory.Any(runtime => runtime == null || string.IsNullOrWhiteSpace(runtime.BackendIdentity)))
+            throw new InvalidDataException("Invalid emulator runtime history.");
         if (metadata.PollFrames == null || metadata.PollFrames.Length > FolderProject.MaximumFrames)
             throw new InvalidDataException("Invalid poll frame collection.");
         var previous = -1;

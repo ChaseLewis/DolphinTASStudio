@@ -31,6 +31,11 @@ public sealed partial class ExecutionService
                 _initial = _backend.Capture() with { Position = 0 };
                 _projectStart = new(ProjectStartKind.PowerOn);
                 _inputs.AddRange(backup.Inputs); _events.AddRange(backup.Events); _hasProject = true;
+                if (backup.RuntimeHistory.Length > 1 && backup.BaselineRuntime != null)
+                {
+                    RememberRuntime(backup.BaselineRuntime, backup.RuntimeHistory);
+                    _allowRuntimeMismatch = true;
+                }
                 InitializeWorkspace(); _checkpointPolicy = checkpoints;
                 // Retain the group's editable poll layout, but regenerate timing
                 // under the new settings before using these records for playback.

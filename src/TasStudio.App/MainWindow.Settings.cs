@@ -155,6 +155,7 @@ public sealed partial class MainWindow
                 note.Text = $"Theme could not be saved: {ex.Message}";
             }
         };
+        page.Children.Add(BuildExperimentSettings(settings, save));
         return page;
     }
     private static StackPanel SettingsPage() => new() { Margin = new Thickness(0,18,12,10), Spacing = 13 };

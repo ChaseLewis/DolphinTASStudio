@@ -40,9 +40,9 @@ public sealed partial class MainWindow
         if (IsEditingText(window)) return false;
         if (focused is Visual visual && visual.GetVisualAncestors().Prepend(visual)
             .Any(control => control is Slider or MenuItem or TabItem or Avalonia.Controls.Primitives.ScrollBar)) return false;
-        // Keep mapped arrow keys available to the controller. Focusing the
-        // timeline explicitly reserves them for cursor navigation instead.
-        if (_useController.IsChecked == true && focused is not TimelineView) return false;
+        // Reserve mapped arrows only while authoring live controller input.
+        // Historical edits still navigate, and timeline focus always navigates.
+        if (UsesControllerInput && focused is not TimelineView) return false;
         e.Handled = true;
         if (!_busy) _timeline.MoveCursor(e.Key == Key.Left ? -1 : 1);
         return true;

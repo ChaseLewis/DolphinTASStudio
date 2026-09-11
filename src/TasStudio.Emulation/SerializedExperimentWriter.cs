@@ -14,7 +14,8 @@ internal sealed class SerializedExperimentWriter(IExperimentResultWriter writer)
     // Completed results are persisted even after worker cancellation.
     public Task WriteAsync(ExperimentResult result) => CallAsync(() => writer.WriteAsync(new(
         result.Index, result.Name, result.Status, result.Error, result.Started, result.WallSeconds,
-        result.Position, result.Frame, result.EmulatedSeconds, result.Value, result.ProjectPath), CancellationToken.None));
+        result.Position, result.Frame, result.EmulatedSeconds, result.Value, result.ProjectPath)
+        { CompatibilityWarning = result.CompatibilityWarning }, CancellationToken.None));
 
     private async Task CallAsync(Func<Task> action)
     {

@@ -14,6 +14,42 @@ namespace TasStudio.Core.Tests;
 
 public sealed class TimelineCursorTests
 {
+    [AvaloniaTheory]
+    [InlineData(42)] // Frame ruler.
+    [InlineData(18)] // Saved state at the active playback end.
+    [InlineData(76)] // Active playback lane.
+    public async Task ClickingActiveEndAfterSelectingTakeKeepsArrowsOnActivePlayback(double y)
+    {
+        using var files = new TestWorkspace(); using var service = new ExecutionService(new FakeBackend());
+        await service.LoadGameAsync(files.GamePath, files.Options); await service.NewProjectAsync();
+        for (var i = 0; i < 80; i++) await service.StepAsync();
+        var take = await service.CaptureTakeAsync("Short candidate", 20, 10);
+        await service.SaveNamedStateAsync("Active end");
+        var main = new MainWindow(["--layout-file", files.FilePath("layout.json")], new AppSettings(), service);
+        try
+        {
+            main.ShowEditor(); main.Show(); main.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            var timeline = main.GetVisualDescendants().OfType<TimelineView>().Single();
+            timeline.VisibleFrames = 100; timeline.FirstFrame = 0; timeline.Update(); main.UpdateLayout();
+            void Click(double frame, double row)
+            {
+                var point = timeline.TranslatePoint(new Point(118 + frame * (timeline.Bounds.Width - 118) / 100, row), main)!.Value;
+                main.MouseDown(point, MouseButton.Left); main.MouseUp(point, MouseButton.Left);
+            }
+            Click(25.5, 114);
+            Assert.Equal(take, timeline.SelectedTake);
+            Click(80.5, y);
+            Assert.Equal(80, timeline.SelectedFrame);
+            var revision = service.Revision;
+            Press(main, PhysicalKey.ArrowRight);
+            Assert.Equal(80, timeline.SelectedFrame); Assert.Null(timeline.SelectedTake);
+            Press(main, PhysicalKey.ArrowLeft);
+            Assert.Equal(79, timeline.SelectedFrame); Assert.Null(timeline.SelectedTake);
+            Assert.Equal(80UL, service.Position); Assert.Equal(revision, service.Revision);
+        }
+        finally { main.CloseAfterCapture(); }
+    }
+
     [AvaloniaFact]
     public void RightClickOnRowsMarkersAndTagsNeverChangesTheCursorOrSelection()
     {
@@ -115,10 +151,42 @@ public sealed class TimelineCursorTests
             Press(main, PhysicalKey.ArrowRight); Assert.Equal(0, timeline.SelectedFrame);
             var use = main.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "UseController");
             use.IsChecked = true;
+            // Controller keys are reserved when authoring a new group at the preview.
+            await service.SeekAsync(3);
+            timeline.SetSelection(3, 4);
             main.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "NextFrame").Focus();
-            Press(main, PhysicalKey.ArrowRight); Assert.Equal(0, timeline.SelectedFrame);
-            timeline.Focus(); Press(main, PhysicalKey.ArrowRight); Assert.Equal(1, timeline.SelectedFrame);
-            Assert.Equal(0UL, service.Position);
+            Press(main, PhysicalKey.ArrowLeft); Assert.Equal(3, timeline.SelectedFrame);
+            timeline.Focus(); Press(main, PhysicalKey.ArrowLeft); Assert.Equal(2, timeline.SelectedFrame);
+            Assert.Equal(3UL, service.Position);
+        }
+        finally { main.CloseAfterCapture(); }
+    }
+
+    [AvaloniaFact]
+    public async Task ArrowsNavigateAfterHistoricalEditWithControllerEnabled()
+    {
+        using var files = new TestWorkspace(); using var service = new ExecutionService(new FakeBackend());
+        await service.LoadGameAsync(files.GamePath, files.Options); await service.NewProjectAsync();
+        for (var i = 0; i < 5; i++) await service.StepAsync();
+        var main = new MainWindow(["--layout-file", files.FilePath("layout.json")], new AppSettings(), service);
+        try
+        {
+            main.ShowEditor(); main.Show(); main.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            var timeline = main.GetVisualDescendants().OfType<TimelineView>().Single();
+            timeline.SetSelection(1, 2);
+            main.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "UseController").IsChecked = true;
+            var button = main.GetVisualDescendants().OfType<CheckBox>().Single(c => Equals(c.Content, "A"));
+            button.Focus(); button.IsChecked = true;
+            // Drain the execution queue so the historical edit is published.
+            await service.PauseAsync(); Dispatcher.UIThread.RunJobs();
+            Assert.True(service.Inputs[1].Buttons.HasFlag(TasStudio.Core.PadButtons.A));
+            Assert.False(service.IsPreviewCurrent);
+            var revision = service.Revision;
+            Press(main, PhysicalKey.ArrowRight); Assert.Equal(2, timeline.SelectedFrame);
+            Assert.False(button.IsChecked);
+            Press(main, PhysicalKey.ArrowRight); Assert.Equal(3, timeline.SelectedFrame);
+            Press(main, PhysicalKey.ArrowLeft); Assert.Equal(2, timeline.SelectedFrame);
+            Assert.Equal(5UL, service.Position); Assert.Equal(revision, service.Revision);
         }
         finally { main.CloseAfterCapture(); }
     }

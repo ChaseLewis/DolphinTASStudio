@@ -6,6 +6,17 @@ Decision date: September 6, 2026. This revision supersedes the initial read-only
 
 The target is repeatable gameplay and captures on a **fixed setup**: the same ROM, initial storage, input/event history, emulator and native host build, configuration, system resources, and graphics environment. Identical pixels across different PCs or GPUs are outside this target. A configuration hash is a compatibility check, not proof of repeatable rendering.
 
+Interactive TAS opening warns when the core or opaque host/resource fingerprint
+changes, then attempts to load the original state. It preserves the baseline's
+original identities and the history chain rather than invalidating progress just
+because a binary changed. Saving/recovery retains runtime provenance. Archive
+integrity, ROM/requested-setting checks, native state decoding and recorded-poll
+desync detection remain enforced. Experiment workers use the same warning policy,
+including projects with mixed emulator-build history. Warnings are logged before
+the script runs and retained in result receipts; they do not make a completed
+trial fail. A warning does not revalidate existing experiment results. Resuming
+a frozen batch still checks that batch's own worker/runtime fingerprints.
+
 **Game compatibility overrides always take precedence over Studio defaults and the project's requested options.** Studio passes its choices at Dolphin's base layer and preserves the game's higher-priority compatibility layers. Disabling all graphics hacks is not a substitute for game-specific compatibility.
 
 Single-core emulator execution is required and is not editable. If an override requires an unsupported execution mode, report the conflict and reject that boot; do not silently replace the override or run an unsupported mode. Effective runtime conflict detection remains a verification gate: a fixed frontend request alone does not prove enforcement after every compatibility layer. The UI and input workers remain separate threads, independent of Dolphin's CPU execution mode.

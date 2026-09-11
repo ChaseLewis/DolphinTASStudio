@@ -39,7 +39,7 @@ public sealed class ExperimentRetentionTests
     {
         using var files = new TestWorkspace();
         var value = JsonSerializer.SerializeToElement(new TypedResult(17, new([1], "test")));
-        var expected = Result(0, value);
+        var expected = Result(0, value) with { CompatibilityWarning = "Warning: mixed runtime history." };
         await using (var writer = new SerializedExperimentWriter(new SqliteExperimentWriter(typeof(TypedResult))))
         {
             await writer.InitializeAsync(new(files.DirectoryPath, "Test", 1), default);
@@ -51,6 +51,7 @@ public sealed class ExperimentRetentionTests
         Assert.Equal(expected.Position, actual.Position);
         Assert.Equal(expected.Frame, actual.Frame);
         Assert.Equal(expected.EmulatedSeconds, actual.EmulatedSeconds);
+        Assert.Equal(expected.CompatibilityWarning, actual.CompatibilityWarning);
         Assert.Equal(JsonSerializer.Serialize(expected.Value), JsonSerializer.Serialize(actual.Value));
     }
 

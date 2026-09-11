@@ -41,11 +41,11 @@ public sealed partial class ExecutionService
     private void InitializeWorkspace()
     {
         ClearWorkspace();
-        var identity = JsonSerializer.Serialize(new { Game = _gameHash, Core = _backend.Identity,
+        var identity = JsonSerializer.Serialize(new { Game = _gameHash, Core = BaselineRuntime.BackendIdentity,
             _options!.InternalResolution, _options.DspHle, Controller = "gamecube/port1/raw8/v1",
             Initial = Convert.ToHexString(SHA256.HashData(_initial!.Data)) });
         // Retain legacy history identities until an explicit configuration restart.
-        if (_options.Configuration != null) identity = JsonSerializer.Serialize(new { Settings = _options.Configuration.Fingerprint, Environment = _backend.ConfigurationIdentity, LegacyIdentity = identity });
+        if (_options.Configuration != null) identity = JsonSerializer.Serialize(new { Settings = _options.Configuration.Fingerprint, Environment = BaselineRuntime.ConfigurationIdentity, LegacyIdentity = identity });
         _history = new ExecutionHistory(identity, _inputs, _events, _pollFrames);
         _checkpointOrigin = _backend.EmulatedSeconds;
         _lastCheckpointAttempt = double.NaN;
@@ -335,14 +335,26 @@ public sealed partial class ExecutionService
         ControllerState[] Inputs, ExecutionEvent[] Events, InputTake[] Takes, TimelineSection[] Sections, SavedStateReference[] States,
         string? ExecutedHistory, Edit[] Undo, Edit[] Redo, long Revision, CheckpointPolicy Checkpoints, double CheckpointOrigin,
         AutomaticCheckpoint[] AutomaticCheckpoints, long CheckpointAccess, ProjectStart? Start)
-    { public TimelineTag[] Tags { get; init; } = []; public RecordedInputFrame[] PollFrames { get; init; } = []; }
+    {
+        public TimelineTag[] Tags { get; init; } = []; public RecordedInputFrame[] PollFrames { get; init; } = [];
+        public EmulatorRuntime? BaselineRuntime { get; init; }
+        public EmulatorRuntime[] RuntimeHistory { get; init; } = [];
+        public bool AllowRuntimeMismatch { get; init; }
+        public string? CompatibilityWarning { get; init; }
+    }
     private SessionBackup? CaptureSession() => !_loaded ? null : new(GamePath!, _options!, _backend.Capture(), _initial,
-        _inputs.ToArray(), _events.ToArray(), _takes.ToArray(), _sections.ToArray(), _savedStates.ToArray(), _executedHistory, _undo.ToArray(), _redo.ToArray(), _revision, _checkpointPolicy, _checkpointOrigin, _checkpoints.ToArray(), _checkpointAccess, _projectStart) { Tags = _tags.ToArray(), PollFrames = PollRecords() };
+        _inputs.ToArray(), _events.ToArray(), _takes.ToArray(), _sections.ToArray(), _savedStates.ToArray(), _executedHistory, _undo.ToArray(), _redo.ToArray(), _revision, _checkpointPolicy, _checkpointOrigin, _checkpoints.ToArray(), _checkpointAccess, _projectStart)
+        { Tags = _tags.ToArray(), PollFrames = PollRecords(), BaselineRuntime = _hasProject ? BaselineRuntime : null,
+          RuntimeHistory = _runtimeHistory.ToArray(), AllowRuntimeMismatch = _allowRuntimeMismatch, CompatibilityWarning = CompatibilityWarning };
     private void RestoreSession(SessionBackup saved)
     {
         LoadGame(saved.Path, saved.Options); _backend.Restore(saved.State);
         _initial = saved.Initial;
         _projectStart = saved.Start;
+        _baselineRuntime = saved.BaselineRuntime;
+        _runtimeHistory = saved.RuntimeHistory;
+        _allowRuntimeMismatch = saved.AllowRuntimeMismatch;
+        Volatile.Write(ref _compatibilityWarning, saved.CompatibilityWarning);
         if (_initial != null)
         {
             _inputs.AddRange(saved.Inputs); _events.AddRange(saved.Events); _hasProject = true; InitializeWorkspace();

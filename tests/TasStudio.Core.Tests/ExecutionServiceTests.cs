@@ -194,7 +194,7 @@ public sealed class ExecutionServiceTests
         var archive = FolderProject.Load(path).Archive;
         FolderProject.Save(path, archive.Metadata with { BackendIdentity = "another-core-build" }, archive.InitialState, [], [], []);
         var callsBeforeLoad = backend.Calls.Count;
-        await Assert.ThrowsAsync<InvalidDataException>(() => service.LoadProjectAsync(path, workspace.Options));
+        await Assert.ThrowsAsync<InvalidDataException>(() => service.LoadProjectAsync(path, workspace.Options, requireExactRuntime: true));
         Assert.DoesNotContain(backend.Calls.Skip(callsBeforeLoad), call =>
             call.Operation is nameof(FakeBackend.Stop) or nameof(FakeBackend.LoadGame) or nameof(FakeBackend.Restore));
         Assert.True(service.IsLoaded);

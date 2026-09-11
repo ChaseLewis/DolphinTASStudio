@@ -28,9 +28,10 @@ internal static class Program
             Console.WriteLine($"Processed cleanup for {count} completed trials or never-started placeholders; other trial artifacts were retained.");
             return 0;
         }
-        if (args.Length == 3 && args[0] == "new-csharp")
+        if (args.Length is 3 or 4 && args[0] == "new-csharp")
         {
-            CSharpWorkspace.Create(args[1], args[2]);
+            CSharpWorkspace.Create(args[1], args[2], args.Length == 4 ? args[3] : null);
+            Console.WriteLine("Created workspace: " + Path.GetFullPath(args[2]));
             return 0;
         }
         var resume = args.Length == 2 && args[0] == "resume-csharp";
@@ -55,7 +56,7 @@ internal static class Program
             catch (OperationCanceledException) { Console.Error.WriteLine("Batch cancelled."); return 2; }
             catch (Exception error) { Console.Error.WriteLine(error.Message); return 1; }
         }
-        Console.Error.WriteLine("Usage: TasStudio.Worker <job.json> | run-csharp <experiment.tascsharp.json> <new-output-directory> | resume-csharp <batch-directory> | clean-csharp <batch-directory>");
+        Console.Error.WriteLine("Usage: TasStudio.Worker <job.json> | new-csharp <project.tasproj> <new-workspace> [state-id] | run-csharp <experiment.tascsharp.json> <new-output-directory> | resume-csharp <batch-directory> | clean-csharp <batch-directory>");
         return 2;
     }
 }

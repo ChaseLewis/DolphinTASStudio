@@ -24,6 +24,90 @@ timeline, not the host computer from arbitrary experiment code.
 
 ## Create a workspace
 
+### From a saved state in Studio
+
+Right-click a valid saved-state marker in the timeline and choose **Experiment →
+Create experiment…**. Enter your experiment's name in the single-field dialog.
+Studio saves the project and creates an initialized folder under its
+`experiments/` directory using that name. Existing folders are preserved;
+colliding folder names receive a numeric suffix. An untitled project also needs
+its normal Save Project dialog. Search behavior is specified in code/config.
+
+The folder contains `Experiments.csproj`, `Experiment.cs`,
+`experiment.tascsharp.json`, and VS Code settings. The config uses a relative
+`SourceProject`, `Start: SaveState`, the selected marker's `StateId`, no UTC
+override, and zero preroll. The state starter runs one validation trial and
+explicitly authors one neutral group at that state; replace it with your search
+and scoring code. It does not replay the remainder of the source movie first.
+
+The same state menu provides **Open Folder**, **Open in Editor** (when an editor
+is available), and **Run …** for its attached
+experiments. Valid state markers with an attached experiment appear green;
+reattaching moves the green indication to the new state. Invalid states retain
+their invalid-state color. Config edits on disk refresh the indication automatically.
+Run saves the project, snapshots the source state and request, then
+launches the worker in a separate process with a nonmodal output/cancel window.
+Each run has its own `experiments/<name>/.runs/<run>/` folder, containing the
+request, source snapshot, `worker.log`, and a `batch/` directory with the normal
+results and resume data. Closing the run window requests cancellation.
+
+After redoing a section, right-click its replacement state and choose
+**Experiment → Attach existing experiment → <name>**. Studio discovers recipes
+from the immediate subfolders of this project's `experiments/` directory. Their
+config is the persistent association; there is no separate experiment registry.
+Attachment updates the source/state and clears UTC overrides and preroll. It
+preserves code, parameters, trial counts, custom config properties and old runs.
+The recipe then appears under the new state. Multiple recipes may attach to one
+state; each recipe has one current starting-state binding.
+
+**Experiment → Rename experiment… → <name>** changes the displayed name and
+the name used for future runs. Folder paths, code, parameters, references and
+existing run names remain stable. **Remove experiment → <name>** removes a
+recipe from project menus and clears its green state indication if no other
+experiment is attached. Both menus list every experiment in the project, so
+you can also manage recipes whose old starting state was deleted.
+
+Removal retires the configuration in place as
+`experiment.tascsharp.json.removed-<id>`. Code and run history remain in the
+folder, and active batches can finish. To recover the recipe, rename that file
+back to `experiment.tascsharp.json`; reattach it if its state no longer exists.
+No emulator state or source project is deleted by this action.
+
+Changing or deleting a state does not delete its experiment folder. Reattach the
+recipe to a replacement before rerunning. Existing run snapshots remain usable.
+For resume, pass the run's **`batch/` subdirectory** to `resume-csharp`; reattachment
+affects new runs, never an existing batch. Successful trial timeline retention
+is unchanged; see the retention section below.
+
+### Editor and default libraries
+
+Under **Options → Configuration → Interface → Experiments**, choose a code editor
+or leave it automatic. Automatic discovery checks VS Code first (user/system
+installations and PATH), then Visual Studio through its installer or environment.
+**Use automatic** clears an override and checks again. An explicit editor path
+must point to an existing `.exe`; a missing override hides Open in Editor until
+the setting is repaired. Open Folder always remains available.
+
+The editor receives the experiment folder as one argument. Folder opening is
+supported by [VS Code](https://code.visualstudio.com/docs/configure/command-line)
+and [Visual Studio](https://devblogs.microsoft.com/cppblog/bring-your-c-codebase-to-visual-studio-with-open-folder/).
+Custom editors should also accept a folder argument.
+
+The **Default libraries** list in the same page accepts `.csproj` files and
+compiled managed `.dll` files. Use **Add libraries…** and **Remove selected** to
+maintain the list. New experiments created through Studio include project
+references for `.csproj` libraries and copy-local assembly references for DLLs,
+alongside the SDK. Paths are relative to the new experiment where possible.
+Missing or unsupported libraries stop creation before a new folder is written.
+
+These are application-wide creation defaults. Changing the list or reattaching
+a recipe does not rewrite existing experiment references. Edit that experiment's
+`Experiments.csproj` to add or remove its libraries. Command-line/VS Code workspace
+creation does not read Studio's personal defaults. Settings save immediately and
+do not require applying or restarting emulation.
+
+### From VS Code or the command line
+
 1. Run `just build` in the Studio repository.
 2. Save your input recording with **Ctrl+S** in Studio. This is a `.tasproj`, not
    **Export Replay**, a DTM file, or a video.
@@ -35,6 +119,13 @@ timeline, not the host computer from arbitrary experiment code.
 
 ```powershell
 & ./artifacts/prod/TasStudio.Worker.exe new-csharp 'D:/TAS/My run/movie.tasproj' 'D:/TAS/Scripts'
+```
+
+An optional fourth argument selects a saved marker ID (or `project-start`) and
+generates the same immediate-takeover starter as Studio's state action:
+
+```powershell
+& ./artifacts/prod/TasStudio.Worker.exe new-csharp 'D:/TAS/My run/movie.tasproj' 'D:/TAS/My run/experiments/boss' '<state-id>'
 ```
 
 The generated workspace contains `Experiments.csproj`, `Experiment.cs`,
@@ -93,6 +184,16 @@ See [Play mode and fixture capture](../README.md#playing-by-hand-and-making-test
 
 Other `StateId` values are Studio marker IDs, not filenames or numbered Dolphin slots. Use a
 compatible Studio state; arbitrary standalone Dolphin state formats are not accepted.
+
+Different emulator-build/resource provenance, including mixed `RuntimeHistory`,
+is a **warning** at experiment startup. The worker attempts to restore the project
+and attached state and run your code. The warning is logged before the script,
+reported in batch progress when the trial finishes, and retained as
+`CompatibilityWarning` in `results.json` and the SQLite `trials.result_json`
+receipt. It does not populate `Error` or change a completed trial to failed.
+ROM hashes, requested settings, archive integrity, native state decoding and
+recorded-poll desync checks still apply. Resume still checks the frozen batch's
+own runtime fingerprints; use a new batch when those files change.
 
 Parameter deserialization uses `System.Text.Json` defaults. Match property names and
 types; use numeric enum values unless you explicitly configure your own converter.

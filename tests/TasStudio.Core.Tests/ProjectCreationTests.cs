@@ -42,7 +42,8 @@ public sealed class ProjectCreationTests
         var calls = backend.Calls.Count;
         var content = await ProjectVerification.VerifyAsync(path, backend.Identity, new Dictionary<string, string>());
         Assert.Equal(calls, backend.Calls.Count);
-        await Assert.ThrowsAsync<InvalidDataException>(() => ProjectVerification.VerifyAsync(path, "different core", new Dictionary<string, string>()));
+        var different = await ProjectVerification.VerifyAsync(path, "different core", new Dictionary<string, string>());
+        Assert.NotNull(ProjectVerification.BuildWarning(different.Archive.Metadata, "different core"));
         var moved = files.FilePath("moved.iso"); File.Move(files.GamePath, moved);
         await ProjectVerification.VerifyAsync(path, backend.Identity, new Dictionary<string, string> { [content.Archive.Metadata.GameHash] = moved });
         await Assert.ThrowsAsync<FileNotFoundException>(() => ProjectVerification.VerifyAsync(path, backend.Identity, new Dictionary<string, string>()));

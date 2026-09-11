@@ -17,5 +17,6 @@ internal sealed record ExperimentOutputResult(int Index, string Name, string Sta
     DateTimeOffset Started, double WallSeconds, ulong Position, ulong Frame, double EmulatedSeconds,
     JsonElement? Value, string? ProjectPath)
 {
+    public string? CompatibilityWarning { get; init; }
     public T? GetValue<T>() => Value is { ValueKind: not JsonValueKind.Null } value ? value.Deserialize<T>() : default;
 }

@@ -4,6 +4,26 @@ Updated 2026-09-06. The `.tasproj` entry point is UTF-8 JSON. The document keeps
 
 ## Files
 
+### Runtime compatibility warnings
+
+Project/replay opening and experiment startup treat a different core binary or opaque
+configuration/dependency identity as a persistent warning. ROM identity, requested
+settings, archive integrity, native state decoding and recorded-poll timing checks
+remain enforced. Opening does not rewrite the source project. Mixed runtime
+history also produces a warning in experiments instead of preventing the script
+from running. Experiment receipts retain `CompatibilityWarning`, including after
+successful trial artifacts are cleaned up. Explicit strict loading remains
+available to verification callers; batch-resume fingerprints are checked separately.
+
+The project environment's `BackendIdentity` and `ConfigurationIdentity` continue
+to describe the embedded baseline bytes. Their original values also anchor the
+history chain so a build warning does not discard named states, checkpoints,
+candidate provenance or recorded polls. Newly captured state containers identify
+the current runtime. Optional `RuntimeHistory` entries retain the build and
+configuration identities involved; they are provenance, not replay verification.
+This history survives Save, Save As, replay export and recovery without changing
+the format version. Older projects without it default to an empty history.
+
 ```text
 My movie/
   My movie.tasproj

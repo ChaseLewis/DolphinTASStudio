@@ -37,7 +37,10 @@ public sealed record ExperimentJob(string Name, string SourceProject, string Cor
     double PrerollSeconds = 0, int PrerollGroups = 0, string? AssemblyPath = null, string? TypeName = null, bool Headless = true,
     bool KeepSuccessfulArtifact = true);
 public sealed record ExperimentResult(string Name, string Status, string? Error, DateTimeOffset Started, double WallSeconds,
-    ulong Position, ulong Frame, double EmulatedSeconds, JsonElement? Value, string? ProjectPath, int Index);
+    ulong Position, ulong Frame, double EmulatedSeconds, JsonElement? Value, string? ProjectPath, int Index)
+{
+    public string? CompatibilityWarning { get; init; }
+}
 
 public static class ExperimentFiles
 {
@@ -57,6 +60,7 @@ public static class ExperimentWorker
     {
         var started = DateTimeOffset.UtcNow; var elapsed = Stopwatch.StartNew();
         var status = "completed"; string? error = null; JsonElement? value = null; string? artifact = null;
+        string? compatibilityWarning = null;
         Directory.CreateDirectory(job.OutputDirectory);
         using var output = new StreamWriter(new FileStream(Path.Combine(job.OutputDirectory, "output.jsonl"), FileMode.Create, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
         var logGate = new object(); var logCount = 0; var loggingClosed = false;
@@ -69,6 +73,12 @@ public static class ExperimentWorker
                 if (++logCount > 100000 || data.GetRawText().Length > 65536) throw new InvalidOperationException("Experiment log limit exceeded.");
                 output.WriteLine(JsonSerializer.Serialize(new { kind, index = job.Index, position = execution.Position, frame = execution.VideoFieldCount, time = execution.ElapsedSeconds, data }));
             }
+        }
+        void ReportCompatibilityWarning()
+        {
+            if (execution.CompatibilityWarning is not { } warning || warning == compatibilityWarning) return;
+            compatibilityWarning = warning;
+            Log("warning", JsonSerializer.SerializeToElement(new { code = "runtime-compatibility", message = warning }));
         }
         ExperimentAssembly? assembly = null;
         try
@@ -90,7 +100,10 @@ public static class ExperimentWorker
             if (utc != null) config = config with { StartUtcSeconds = utc.Value };
             ExperimentFiles.Write(Path.Combine(job.OutputDirectory, "initialization.json"), new { job.Index, job.Count, job.Start, StartUtcSeconds = config.StartUtcSeconds });
             var options = new BackendOptions(job.CorePath, job.SystemDirectory, Path.Combine(job.OutputDirectory, "profile"));
+            // Runtime provenance is advisory, just as when opening the project in Studio.
+            // ROM/settings/integrity, native restore and recorded-poll validation still apply.
             await execution.LoadProjectAsync(job.SourceProject, options, positionOverride: 0, powerOnConfiguration: job.Start == ExperimentStart.Boot ? config : null);
+            ReportCompatibilityWarning();
             var originalMovie = execution.Inputs.ToArray();
             token.ThrowIfCancellationRequested();
             if (job.Start == ExperimentStart.SaveState)
@@ -100,6 +113,7 @@ public static class ExperimentWorker
                 // LoadProjectAsync above has already restored the embedded baseline at group zero.
                 if (stateId != ExperimentStates.ProjectStart) await execution.LoadMarkerAsync(stateId);
                 await execution.ConfigureCheckpointsAsync(new(Enabled: false));
+                ReportCompatibilityWarning();
             }
             token.ThrowIfCancellationRequested();
             var prerollStart = execution.ElapsedSeconds;
@@ -120,6 +134,7 @@ public static class ExperimentWorker
                 {
                     var returned = await experiment.RunAsync(context, token);
                     token.ThrowIfCancellationRequested(); value = JsonSerializer.SerializeToElement(returned, ExperimentResultSchema.CreateJsonOptions());
+                    ReportCompatibilityWarning();
                 }
                 finally { lifetime.Cancel(); }
             }
@@ -138,7 +153,8 @@ public static class ExperimentWorker
             }
         }
         var summary = new ExperimentResult(job.Name, status, error, started, elapsed.Elapsed.TotalSeconds,
-            execution.Position, execution.VideoFieldCount, execution.ElapsedSeconds, value, artifact, job.Index);
+            execution.Position, execution.VideoFieldCount, execution.ElapsedSeconds, value, artifact, job.Index)
+        { CompatibilityWarning = compatibilityWarning };
         ExperimentFiles.Write(Path.Combine(job.OutputDirectory, "result.json"), summary);
         return summary;
     }
@@ -277,6 +293,7 @@ public static class ExperimentRunner
             results[index] = await RunProcess(job, workerExecutable, token);
             if (resume) ExperimentFiles.Write(Path.Combine(trialDirectory, "result.json"), results[index]);
             results[index] = await PersistResultAsync(results[index]);
+            if (results[index].CompatibilityWarning is { } warning) progress?.Invoke($"{trial.Name}: {warning}");
             progress?.Invoke($"{trial.Name}: {results[index].Status}" + (results[index].Error == null ? "" : " — " + results[index].Error));
         }, token);
         var recorded = results.Where(result => result != null).ToArray();

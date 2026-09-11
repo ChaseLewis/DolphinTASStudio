@@ -42,6 +42,9 @@ public sealed class AppSettings
     public int Volume { get; set; } = DefaultVolume;
     public bool Muted { get; set; }
     public UiTheme Theme { get; set; } = UiTheme.System;
+    // Null uses automatic discovery: VS Code first, then Visual Studio.
+    public string? CodeEditorPath { get; set; }
+    public List<string> ExperimentLibraries { get; set; } = [];
     public int GamepadIndex { get; set; } = -1;
     public int DeadZonePercent { get; set; } = DefaultDeadZone;
     public int TriggerClickPercent { get; set; } = DefaultTriggerThreshold;
@@ -85,6 +88,9 @@ public sealed class AppSettings
             var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path), JsonOptions) ?? throw new InvalidDataException("Settings are empty.");
             settings.Volume = Math.Clamp(settings.Volume, 0, 100);
             if (!Enum.IsDefined(settings.Theme)) settings.Theme = UiTheme.System;
+            settings.CodeEditorPath = string.IsNullOrWhiteSpace(settings.CodeEditorPath) ? null : settings.CodeEditorPath.Trim();
+            settings.ExperimentLibraries = (settings.ExperimentLibraries ?? []).Where(p => !string.IsNullOrWhiteSpace(p))
+                .Select(p => p.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             settings.GamepadIndex = Math.Clamp(settings.GamepadIndex, -1, 3);
             settings.DeadZonePercent = Math.Clamp(settings.DeadZonePercent, 0, 95);
             settings.TriggerClickPercent = Math.Clamp(settings.TriggerClickPercent, 1, 100);

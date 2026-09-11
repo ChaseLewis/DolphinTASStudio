@@ -151,7 +151,8 @@ internal sealed class SqliteExperimentWriter(Type resultType, bool resume = fals
         Execute(_trialCommand!, transaction, [result.Index, result.Name, result.Status, result.Error,
             result.Started.ToString("O", CultureInfo.InvariantCulture), result.WallSeconds, result.EmulatedSeconds, result.ProjectPath,
             JsonSerializer.Serialize(new ExperimentResult(result.Name, result.Status, result.Error, result.Started, result.WallSeconds,
-                result.Position, result.Frame, result.EmulatedSeconds, result.Value, result.ProjectPath, result.Index), ExperimentFiles.Json)]);
+                result.Position, result.Frame, result.EmulatedSeconds, result.Value, result.ProjectPath, result.Index)
+                { CompatibilityWarning = result.CompatibilityWarning }, ExperimentFiles.Json)]);
         if (values == null) Execute(_deleteResultCommand!, transaction, [result.Index]);
         else Execute(_resultCommand!, transaction, [result.Index, .. values]);
         transaction.Commit();

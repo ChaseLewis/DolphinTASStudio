@@ -16,7 +16,7 @@ internal enum ThemeColor
     Window, Panel, Header, Border, Text, Muted, Icon, Accent, Primary, PrimaryText,
     Selection, SelectionBorder, Input, Guide, Error, TimelineBackground, TimelineGrid,
     TimelineActive, TimelineInput, TimelineCursor, TimelinePreview, TimelineInvalid,
-    TimelineTag, TimelineTagText, TimelineSelection, TimelineAutomatic, TimelineClipText, TimelineCandidatePreview,
+    TimelineTag, TimelineTagText, TimelineSelection, TimelineAutomatic, TimelineExperiment, TimelineClipText, TimelineCandidatePreview,
     ControllerDot, ControllerDotBorder, GameBackground, GamePlaceholder
 }
 
