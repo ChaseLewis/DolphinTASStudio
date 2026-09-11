@@ -278,6 +278,14 @@ input; it removes the applied take, and Undo restores both.
 - **Export Replay** produces Studio's flattened `.tasreplay`, not a Dolphin DTM
   movie, a video, or an experiment configuration. To run experiments, save the
   `.tasproj` and point `SourceProject` at it.
+- **Export to Dolphin → Quick / Full** creates an experimental `.dtm` for power-on
+  GameCube movies without memory-write or reset events. Quick uses complete, current
+  cached polls (otherwise it directs you to Full). Full bakes the entire timeline. Each
+  preserves your paused position, and creates a companion folder containing an
+  isolated Dolphin profile, original Slot A card copies, and playback instructions.
+  It automatically measures and prepends startup controller polls, verifying the
+  recreated boot against the original timing and RAM. Use the supplied launcher
+  for testing; compatibility still depends on the game/build/settings. See [Dolphin export](docs/dolphin-movie-export.md).
 
 See [input/recovery behavior](docs/input-workflow-and-recovery.md),
 [project format](docs/project-format-v2.md), and [configuration policy](docs/configuration-policy.md).

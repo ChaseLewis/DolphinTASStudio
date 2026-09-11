@@ -30,7 +30,8 @@ internal static class CSharpCommand
             throw new InvalidDataException("AssemblyName must be the experiment assembly's simple name.");
         var definition = new ExperimentDefinition(1, config.Name, config.Start, config.StateId, config.StartUtcSeconds,
             config.Parallelism, config.TimeoutSeconds, Enumerable.Range(0, config.Count).Select(i => new ExperimentTrial("Trial " + i, parameters)).ToArray(),
-            config.PrerollSeconds, config.PrerollGroups, TypeName: config.TypeName, Headless: config.Headless);
+            config.PrerollSeconds, config.PrerollGroups, TypeName: config.TypeName, Headless: config.Headless)
+            { TopPlays = config.TopPlays };
         definition.Validate();
         Directory.CreateDirectory(outputDirectory);
         ExperimentFiles.Write(Path.Combine(outputDirectory, "request.json"), config);

@@ -13,6 +13,12 @@ if (args.Length < 2) throw new ArgumentException("Usage: integration <rom> <outp
 var rom = Path.GetFullPath(args[0]);
 var output = Path.GetFullPath(args[1]);
 Directory.CreateDirectory(output);
+if (args.Contains("dtm-export"))
+{
+    var sourceIndex = Array.IndexOf(args, "--movie");
+    await DolphinMovieExportCheck.Run(rom, output, sourceIndex >= 0 ? args[sourceIndex + 1] : null);
+    return;
+}
 if (Array.IndexOf(args, "project-build-warning") is var warningIndex && warningIndex >= 0)
 {
     await ProjectBuildWarning.Run(rom, output, args[warningIndex + 1]);

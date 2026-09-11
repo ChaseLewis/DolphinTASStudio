@@ -49,6 +49,7 @@ public interface IExperiment<TResult> : IExperiment where TResult : notnull
 public sealed class ExperimentRunContext
 {
     private readonly Action<object?> _log;
+    private readonly Func<double, string?, CancellationToken, Task>? _submitPlay;
     public int Index => Initialization.Index;
     public int Count => Initialization.Count;
     public JsonElement Parameters => Initialization.Parameters;
@@ -59,8 +60,19 @@ public sealed class ExperimentRunContext
     public ExperimentRunContext(ExperimentInitializationContext initialization, IExperimentEmulator emulator,
         IEnumerable<ControllerState> movie, Action<object?> log)
     { Initialization = initialization; Emulator = emulator; Movie = Array.AsReadOnly(movie.ToArray()); _log = log; }
+    public ExperimentRunContext(ExperimentInitializationContext initialization, IExperimentEmulator emulator,
+        IEnumerable<ControllerState> movie, Action<object?> log, Func<double, string?, CancellationToken, Task> submitPlay)
+        : this(initialization, emulator, movie, log) => _submitPlay = submitPlay;
     public T GetParameters<T>() => Initialization.GetParameters<T>();
     public void Log(object? value) => _log(value);
+    /// <summary>Freeze the executed path from the script's starting group to the current position.
+    /// Optional: does nothing when TopPlays is disabled. Explicit submissions replace automatic final-play capture.</summary>
+    public Task SubmitPlayAsync(double score, string? name = null, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!double.IsFinite(score)) throw new ArgumentOutOfRangeException(nameof(score), "Play scores must be finite.");
+        return _submitPlay?.Invoke(score, name, cancellationToken) ?? Task.CompletedTask;
+    }
 }
 
 public sealed record EmulatorPosition(ulong Group, ulong VideoField, double Seconds, int InputCount, bool IsCurrent);
@@ -85,6 +97,11 @@ public interface IExperimentEmulator
     Task SeekAsync(ulong group);
     Task<string> SaveStateAsync(string name);
     Task LoadStateAsync(string id);
+    /// <summary>Restore a checkpoint; optionally discard inputs from its next-input group and events after it.
+    /// The original one-argument signature remains available to already compiled experiments.</summary>
+    Task LoadStateAsync(string id, bool clearLaterInput) => clearLaterInput
+        ? throw new NotSupportedException("This emulator does not support clearing later input on restore.")
+        : LoadStateAsync(id);
     /// <summary>Remove a state/checkpoint from this worker. Deletes worker-owned files;
     /// source-project files remain untouched. Unknown IDs or file deletion failures throw.</summary>
     Task DeleteStateAsync(string id);

@@ -245,11 +245,13 @@ public sealed partial class ExecutionService
         _savedStates.Add(new(Guid.NewGuid().ToString("N"), name ?? Path.GetFileNameWithoutExtension(path), position, _history!.At(position), Path.GetFullPath(path)) { OwnsFile = ownsFile });
         Interlocked.Increment(ref _revision);
     }
-    public Task LoadMarkerAsync(string id) => Enqueue(() =>
+    public Task LoadMarkerAsync(string id) => LoadMarkerAsync(id, false);
+    public Task LoadMarkerAsync(string id, bool clearLaterInput) => Enqueue(() =>
     {
         RequireProject(); Pause(); var saved = _savedStates.SingleOrDefault(s => s.Id == id) ?? _checkpoints.SingleOrDefault(c => c.State.Id == id)?.State ?? throw new InvalidDataException("Saved state was removed because its history changed.");
         if (!Valid(saved.Position, saved.HistoryHash)) throw new InvalidDataException("Saved state invalid: preceding input/events changed.");
         RestoreSaved(saved); TouchCheckpoint(saved.Id); Notify("Saved state restored");
+        if (clearLaterInput) ClearInputFromCurrentPosition();
     });
     public Task ClearMarkerAsync(string id, bool requireFileDeletion = false) => Enqueue(() =>
     {

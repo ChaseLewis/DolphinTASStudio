@@ -17,8 +17,10 @@ public sealed record ExperimentDefinition(int Version, string Name,
     ExperimentStart Start, string? StateId, long? StartUtcSeconds, int Parallelism, int TimeoutSeconds, ExperimentTrial[] Trials,
     double PrerollSeconds = 0, int PrerollGroups = 0, string? AssemblyPath = null, string? TypeName = null, bool Headless = true)
 {
+    public ExperimentTopPlays? TopPlays { get; init; }
     public void Validate()
     {
+        TopPlays?.Validate();
         if (Version != 1 || string.IsNullOrWhiteSpace(Name) || Parallelism is < 1 or > 4 || TimeoutSeconds is < 1 or > 86400 || Trials is not { Length: > 0 })
             throw new InvalidDataException("Experiment needs a name, at least one trial, 1–4 workers and a 1–86400 second timeout.");
         if (!Enum.IsDefined(Start) || (Start == ExperimentStart.SaveState && string.IsNullOrWhiteSpace(StateId))) throw new InvalidDataException("Select a starting save state.");
@@ -35,11 +37,17 @@ public sealed record ExperimentJob(string Name, string SourceProject, string Cor
     string OutputDirectory, ExperimentStart Start, string? StateId, long? StartUtcSeconds,
     JsonElement Parameters, int TimeoutSeconds, int Index, int Count,
     double PrerollSeconds = 0, int PrerollGroups = 0, string? AssemblyPath = null, string? TypeName = null, bool Headless = true,
-    bool KeepSuccessfulArtifact = true);
+    bool KeepSuccessfulArtifact = true)
+{
+    public ExperimentTopPlays? TopPlays { get; init; }
+}
 public sealed record ExperimentResult(string Name, string Status, string? Error, DateTimeOffset Started, double WallSeconds,
     ulong Position, ulong Frame, double EmulatedSeconds, JsonElement? Value, string? ProjectPath, int Index)
 {
     public string? CompatibilityWarning { get; init; }
+    public string? PlayWarning { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ExperimentPlay[]? Plays { get; init; }
 }
 
 public static class ExperimentFiles
@@ -61,6 +69,8 @@ public static class ExperimentWorker
         var started = DateTimeOffset.UtcNow; var elapsed = Stopwatch.StartNew();
         var status = "completed"; string? error = null; JsonElement? value = null; string? artifact = null;
         string? compatibilityWarning = null;
+        string? playWarning = null;
+        var plays = new List<ExperimentPlay>();
         Directory.CreateDirectory(job.OutputDirectory);
         using var output = new StreamWriter(new FileStream(Path.Combine(job.OutputDirectory, "output.jsonl"), FileMode.Create, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
         var logGate = new object(); var logCount = 0; var loggingClosed = false;
@@ -84,6 +94,7 @@ public static class ExperimentWorker
         try
         {
             token.ThrowIfCancellationRequested();
+            job.TopPlays?.Validate();
             var source = FolderProject.Load(job.SourceProject);
             var metadata = source.Archive.Metadata;
             var config = metadata.Configuration ?? EmulationConfiguration.FromLegacy(metadata.InternalResolution, metadata.DspHle);
@@ -129,11 +140,39 @@ public static class ExperimentWorker
             {
                 using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(token);
                 await using var emulator = new ExperimentEmulator(execution, lifetime.Token);
-                var context = new ExperimentRunContext(initialization, emulator, originalMovie, data => Log("value", JsonSerializer.SerializeToElement(data)));
+                var anchor = job.TopPlays == null ? null : await execution.CapturePlayAnchorAsync();
+                var submitted = 0;
+                async Task Submit(double score, string? name, CancellationToken cancellation)
+                {
+                    if (job.TopPlays == null) return;
+                    await emulator.SubmitPlayAsync(async () =>
+                    {
+                        cancellation.ThrowIfCancellationRequested();
+                        if (name is { Length: > 200 }) throw new ArgumentException("Play names must be at most 200 characters.");
+                        var play = await execution.CapturePlayAsync(anchor!, submitted, name ?? job.Name, score);
+                        cancellation.ThrowIfCancellationRequested();
+                        submitted = checked(submitted + 1);
+                        plays.Add(play);
+                        var best = job.TopPlays.Rank(plays).Take(job.TopPlays.Keep).ToArray();
+                        plays.Clear(); plays.AddRange(best);
+                    });
+                }
+                var context = new ExperimentRunContext(initialization, emulator, originalMovie,
+                    data => Log("value", JsonSerializer.SerializeToElement(data)), Submit);
                 try
                 {
                     var returned = await experiment.RunAsync(context, token);
                     token.ThrowIfCancellationRequested(); value = JsonSerializer.SerializeToElement(returned, ExperimentResultSchema.CreateJsonOptions());
+                    if (job.TopPlays != null && submitted == 0)
+                    {
+                        try { await Submit(job.TopPlays.ReadScore(value), job.Name, token); }
+                        catch (Exception ex) when (ex is InvalidDataException or InvalidOperationException)
+                        {
+                            // A valid score result is still useful when no replayable path was produced.
+                            playWarning = ex.Message;
+                            Log("play-warning", JsonSerializer.SerializeToElement(new { message = playWarning }));
+                        }
+                    }
                     ReportCompatibilityWarning();
                 }
                 finally { lifetime.Cancel(); }
@@ -154,7 +193,7 @@ public static class ExperimentWorker
         }
         var summary = new ExperimentResult(job.Name, status, error, started, elapsed.Elapsed.TotalSeconds,
             execution.Position, execution.VideoFieldCount, execution.ElapsedSeconds, value, artifact, job.Index)
-        { CompatibilityWarning = compatibilityWarning };
+        { CompatibilityWarning = compatibilityWarning, PlayWarning = playWarning, Plays = plays.Count == 0 ? null : plays.ToArray() };
         ExperimentFiles.Write(Path.Combine(job.OutputDirectory, "result.json"), summary);
         return summary;
     }
@@ -233,7 +272,8 @@ public static class ExperimentRunner
         using var writerAssembly = experimentAssembly == null ? null : new ExperimentAssembly(experimentAssembly, loadInMemory: true);
         var resultType = writerAssembly?.GetResultType(definition.TypeName);
         if (resume && resultType == null) throw new InvalidDataException("Resume requires typed SQLite results.");
-        var sqlite = resultType == null ? null : new SqliteExperimentWriter(resultType, resume);
+        if (definition.TopPlays != null && resultType == null) throw new InvalidDataException("TopPlays requires a typed IExperiment<TResult> result.");
+        var sqlite = resultType == null ? null : new SqliteExperimentWriter(resultType, resume, definition.TopPlays);
         await using var writer = sqlite == null ? null : new SerializedExperimentWriter(sqlite);
         if (writer != null) await writer.InitializeAsync(new(Path.GetFullPath(batchDirectory), definition.Name, definition.Trials.Length), token);
         var writerErrors = new System.Collections.Concurrent.ConcurrentQueue<string>();
@@ -246,7 +286,7 @@ public static class ExperimentRunner
             {
                 await writer.WriteAsync(saved);
                 if (!retain) ExperimentArtifactCleanup.RemoveTrial(batchDirectory, result.Index, progress);
-                return saved;
+                return saved with { Plays = null };
             }
             catch (Exception ex)
             {
@@ -286,7 +326,8 @@ public static class ExperimentRunner
             var directory = resume ? Path.Combine(trialDirectory, "attempts", Guid.NewGuid().ToString("N")) : trialDirectory;
             var job = new ExperimentJob(trial.Name, sourceProject, corePath, systemDirectory, directory, definition.Start,
                 definition.StateId, trial.StartUtcSeconds ?? definition.StartUtcSeconds, trial.Parameters, definition.TimeoutSeconds, index, definition.Trials.Length,
-                definition.PrerollSeconds, definition.PrerollGroups, experimentAssembly, definition.TypeName, definition.Headless, KeepSuccessfulArtifact: writer == null);
+                definition.PrerollSeconds, definition.PrerollGroups, experimentAssembly, definition.TypeName, definition.Headless, KeepSuccessfulArtifact: writer == null)
+                { TopPlays = definition.TopPlays };
             ExperimentFiles.Write(Path.Combine(directory, "job.json"), job);
             if (resume) ExperimentFiles.Write(Path.Combine(trialDirectory, "job.json"), job);
             progress?.Invoke($"Starting {index + 1}/{definition.Trials.Length}: {trial.Name}");
@@ -294,6 +335,7 @@ public static class ExperimentRunner
             if (resume) ExperimentFiles.Write(Path.Combine(trialDirectory, "result.json"), results[index]);
             results[index] = await PersistResultAsync(results[index]);
             if (results[index].CompatibilityWarning is { } warning) progress?.Invoke($"{trial.Name}: {warning}");
+            if (results[index].PlayWarning is { } playWarning) progress?.Invoke($"{trial.Name}: play not retained — {playWarning}");
             progress?.Invoke($"{trial.Name}: {results[index].Status}" + (results[index].Error == null ? "" : " — " + results[index].Error));
         }, token);
         var recorded = results.Where(result => result != null).ToArray();

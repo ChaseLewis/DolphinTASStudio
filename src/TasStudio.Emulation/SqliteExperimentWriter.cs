@@ -4,7 +4,7 @@ using Microsoft.Data.Sqlite;
 
 namespace TasStudio.Emulation;
 
-internal sealed class SqliteExperimentWriter(Type resultType, bool resume = false) : IExperimentResultWriter
+internal sealed class SqliteExperimentWriter(Type resultType, bool resume = false, ExperimentTopPlays? topPlays = null) : IExperimentResultWriter
 {
     private readonly ExperimentResultSchema _schema = new(resultType);
     private SqliteConnection? _connection;
@@ -22,6 +22,20 @@ internal sealed class SqliteExperimentWriter(Type resultType, bool resume = fals
         _connection.Open();
         if (resume) ValidateSchema(); else CreateSchema();
         EnsureReceiptColumn();
+        topPlays?.Validate();
+        using (var command = _connection.CreateCommand())
+        {
+            command.CommandText = """
+                CREATE TABLE IF NOT EXISTS plays (
+                    trial_index INTEGER NOT NULL REFERENCES trials(trial_index) ON DELETE CASCADE,
+                    submission_index INTEGER NOT NULL,
+                    name TEXT NOT NULL, score REAL NOT NULL,
+                    start_group INTEGER NOT NULL, input_count INTEGER NOT NULL, data BLOB NOT NULL,
+                    PRIMARY KEY (trial_index, submission_index)
+                );
+                """;
+            command.ExecuteNonQuery();
+        }
         PrepareCommands();
         return Task.CompletedTask;
     }
@@ -152,9 +166,30 @@ internal sealed class SqliteExperimentWriter(Type resultType, bool resume = fals
             result.Started.ToString("O", CultureInfo.InvariantCulture), result.WallSeconds, result.EmulatedSeconds, result.ProjectPath,
             JsonSerializer.Serialize(new ExperimentResult(result.Name, result.Status, result.Error, result.Started, result.WallSeconds,
                 result.Position, result.Frame, result.EmulatedSeconds, result.Value, result.ProjectPath, result.Index)
-                { CompatibilityWarning = result.CompatibilityWarning }, ExperimentFiles.Json)]);
+                { CompatibilityWarning = result.CompatibilityWarning, PlayWarning = result.PlayWarning }, ExperimentFiles.Json)]);
         if (values == null) Execute(_deleteResultCommand!, transaction, [result.Index]);
         else Execute(_resultCommand!, transaction, [result.Index, .. values]);
+        if (topPlays != null && result.Status == "completed" && result.Plays is { Length: > 0 })
+        {
+            foreach (var play in result.Plays)
+            {
+                if (!double.IsFinite(play.Score) || play.SubmissionIndex < 0) throw new InvalidDataException("Invalid submitted play score or index.");
+                using var insert = connection.CreateCommand(); insert.Transaction = transaction;
+                insert.CommandText = """
+                    INSERT OR REPLACE INTO plays (trial_index,submission_index,name,score,start_group,input_count,data)
+                    VALUES ($trial,$submission,$name,$score,$start,$length,$data)
+                    """;
+                insert.Parameters.AddWithValue("$trial", result.Index); insert.Parameters.AddWithValue("$submission", play.SubmissionIndex);
+                insert.Parameters.AddWithValue("$name", play.Name); insert.Parameters.AddWithValue("$score", play.Score);
+                insert.Parameters.AddWithValue("$start", play.Start); insert.Parameters.AddWithValue("$length", play.Length);
+                insert.Parameters.AddWithValue("$data", play.Data); insert.ExecuteNonQuery();
+            }
+            using var prune = connection.CreateCommand(); prune.Transaction = transaction;
+            prune.CommandText = "DELETE FROM plays WHERE (trial_index,submission_index) NOT IN " +
+                "(SELECT trial_index,submission_index FROM plays ORDER BY score " + (topPlays.HigherIsBetter ? "DESC" : "ASC") +
+                ",trial_index,submission_index LIMIT $keep)";
+            prune.Parameters.AddWithValue("$keep", topPlays.Keep); prune.ExecuteNonQuery();
+        }
         transaction.Commit();
         return Task.CompletedTask;
     }

@@ -1,13 +1,23 @@
 # Memory watcher — implementation and verification
 
-September 6, 2026.
+September 11, 2026.
 
 ## Behavior
 
-- Compact Name / Value / Type list with collapsible nested groups. Addresses and
+- Compact Name / Value list with collapsible nested groups. Types, addresses and
   full pointer expressions are in tooltips and the edit dialog.
-- Double-click a watch to edit or empty list space to add. Double-click a group
-  to rename it; use its chevron to expand. Insert adds, F2/Enter edits, Delete removes.
+- Double-click a value (or select a watch and press Enter) to pause and edit in
+  place. Enter applies; Escape or clicking away cancels. Invalid values show an
+  inline error and leave memory unchanged. Double-click a watch name or use F2
+  to edit its definition; double-click empty list space or use Insert to add.
+  Double-click a group to rename it; use its chevron to expand. Delete removes.
+- Writes validate signedness, integer range, finite float range, display base,
+  exact byte-array length and UTF-8 byte length. Text supports `\\`, `\r`, `\n`,
+  and `\t` escapes; shorter text clears the remainder of its fixed-size field.
+  Unchanged text does not write. A changed execution state requires reopening
+  the inline editor. Pointers resolve on the execution thread at write time.
+  Project writes are recorded as ordinary memory events, preserving the resolved
+  address and bytes for replay, history invalidation and undo.
 - Editor: label, read-only preview, address, type, optional byte length, pointer
   toggle and ordered signed hexadecimal offsets. Each resolved hop is shown.
   Changing definitions never writes emulated memory.
@@ -37,6 +47,11 @@ overwriting definitions with an empty collection.
 
 ## Verification
 
+- September 11: app build passed with zero warnings/errors; all 47 watcher tests
+  passed, including typed write boundaries, display round trips, UTF-8 limits,
+  invalid/stale write rejection, pointer destinations, replay and undo. Headless
+  UI tests cover inline editing, validation, apply, Escape/blur cancellation,
+  and deleting text without deleting its watch.
 - Release build and self-contained publish completed with zero warnings/errors;
   all 118 tests passed, including the supplied DMW fixture checks.
 - The supplied SOAStuff.dmw imports 590 watches, 46 groups and 257 pointer chains
@@ -54,5 +69,5 @@ overwriting definitions with an empty collection.
   `artifacts/watchers/watch-editor.png`. No live desktop interaction was needed.
 
 Bounds: 8 MiB files, 10,000 definitions, 16 group/pointer levels, 4096 bytes per
-string/array, and GameCube cached MEM1 only. Memory search, writing/freezing values,
+string/array, and GameCube cached MEM1 only. Memory search, freezing values,
 DMW export and active-playback refresh remain outside this iteration.

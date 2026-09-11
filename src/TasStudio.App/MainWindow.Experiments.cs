@@ -98,6 +98,12 @@ public sealed partial class MainWindow
             {
                 items.Add(new Separator());
                 items.Add(Action("Run " + experiment.Name, () => RunStateExperiment(state, experiment.ConfigPath)));
+                items.Add(Action("Top plays settings — " + experiment.Name, () => ConfigureExperimentTopPlays(experiment.ConfigPath)));
+                items.Add(Action("View top plays — " + experiment.Name, () =>
+                {
+                    ShowExperimentPlays(ProjectExperiments.PreviousBatches(experiment.ConfigPath));
+                    return Task.CompletedTask;
+                }));
                 items.Add(Action("Open Folder — " + experiment.Name, () =>
                 {
                     OpenExperimentFolder(Path.GetDirectoryName(experiment.ConfigPath)!);
@@ -206,9 +212,67 @@ public sealed partial class MainWindow
         if (!File.Exists(worker)) throw new FileNotFoundException("Experiment worker is missing. Use a complete published TAS Studio build.", worker);
         if (!await SaveExperimentSource(state)) return;
         var run = await Task.Run(() => ProjectExperiments.PrepareRun(configPath, _projectPath!, state.Id));
-        var window = new ExperimentRunWindow(worker, run);
+        var window = new ExperimentRunWindow(worker, run, () => ShowExperimentPlays([run.BatchDirectory]));
         window.Show(this);
         _status.Text = "Experiment started. Results: " + run.BatchDirectory;
+    }
+
+    private void ShowExperimentPlays(IEnumerable<string> batches) =>
+        new ExperimentPlaysWindow(batches, ApplyExperimentPlay).Show(this);
+
+    private async Task ApplyExperimentPlay(string batch, ExperimentPlaySummary summary)
+    {
+        if (_busy) throw new InvalidOperationException("Wait for the current project operation to finish.");
+        _busy = true;
+        try
+        {
+            await FlushInputEditsAsync();
+            var play = await Task.Run(() => ExperimentPlayResults.Load(batch, summary.TrialIndex, summary.SubmissionIndex));
+            await _execution.ApplyExperimentPlayAsync(play);
+            _audio.Flush();
+            _timeline.InputCount = _execution.Inputs.Count;
+            _timeline.SetSelection(play.Start, play.Start + play.Length);
+            LoadSelectedInput();
+            _status.Text = $"Applied {play.Name} to Active playback. Seek to preview; Undo restores previous inputs.";
+        }
+        finally { _busy = false; Refresh(); }
+    }
+
+    private async Task ConfigureExperimentTopPlays(string configPath)
+    {
+        var current = ExperimentFiles.Read<CSharpExperimentFile>(configPath).TopPlays;
+        var enabled = new CheckBox { Content = "Retain top plays", IsChecked = current != null };
+        var field = new TextBox { Text = current?.ScoreField ?? "Score", Watermark = "Result score field" };
+        var higher = new CheckBox { Content = "Higher scores are better", IsChecked = current?.HigherIsBetter ?? true };
+        var keep = new NumericUpDown { Minimum = 1, Maximum = 1000, Increment = 1, FormatString = "0", Value = current?.Keep ?? 10 };
+        var save = new Button { Content = "Save", IsDefault = true };
+        var cancel = new Button { Content = "Cancel", IsCancel = true };
+        var dialog = new Window { Title = "Top plays settings", Width = 460, SizeToContent = SizeToContent.Height,
+            CanResize = false, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        void Validate()
+        {
+            field.IsEnabled = higher.IsEnabled = keep.IsEnabled = enabled.IsChecked == true;
+            save.IsEnabled = enabled.IsChecked != true || (!string.IsNullOrWhiteSpace(field.Text) && keep.Value is >= 1 and <= 1000 && keep.Value == decimal.Truncate(keep.Value.Value));
+        }
+        enabled.IsCheckedChanged += (_, _) => Validate(); field.TextChanged += (_, _) => Validate(); keep.ValueChanged += (_, _) => Validate();
+        Validate(); save.Click += (_, _) => dialog.Close(true); cancel.Click += (_, _) => dialog.Close(false);
+        dialog.Content = new StackPanel { Margin = new Thickness(18), Spacing = 10, Children =
+        {
+            enabled, new TextBlock { Text = "Score field in the returned result (used for automatic capture)" }, field, higher,
+            new TextBlock { Text = "Number of plays to keep across all trials" }, keep,
+            new TextBlock { Text = "Explicit SubmitPlayAsync calls use their supplied score. Changes apply to new batches.", TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+            new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8, Children = { cancel, save } }
+        } };
+        _dialogOpen = true;
+        try
+        {
+            if (await dialog.ShowDialog<bool>(this))
+            {
+                ExperimentTopPlays? options = enabled.IsChecked == true ? new(field.Text!.Trim(), higher.IsChecked == true, (int)keep.Value!) : null;
+                ProjectExperiments.SetTopPlays(_projectPath!, configPath, options);
+            }
+        }
+        finally { _dialogOpen = false; }
     }
 
     internal static void OpenExperimentFolder(string directory) =>

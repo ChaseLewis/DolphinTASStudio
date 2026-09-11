@@ -7,12 +7,70 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using TasStudio.App;
 using TasStudio.Core;
+using TasStudio.Emulation;
 using Xunit;
 
 namespace TasStudio.Core.Tests;
 
 public sealed class WatchEditorTests
 {
+    [AvaloniaFact]
+    public async Task DoubleClickValueValidatesWritesInPlaceAndEscapeOrBlurCancels()
+    {
+        using var files = new TestWorkspace(); var backend = new FakeBackend();
+        var service = new ExecutionService(backend);
+        await service.LoadGameAsync(files.GamePath, files.Options); await service.NewProjectAsync();
+        var watches = files.FilePath("fixture.watches.json");
+        new WatchDocument(1, [WatchNode.Entry("Health", new(0x80000020))]).Save(watches);
+        var main = new MainWindow(["--layout-file", files.FilePath("layout.json")], execution: service);
+        try
+        {
+            main.ShowEditor(); main.Show(); main.LoadWatchDocument(watches); main.ShowWorkspacePanel("watcher");
+            Dispatcher.UIThread.RunJobs();
+            var root = (Dock.Model.Controls.IRootDock)main.GetVisualDescendants().OfType<Dock.Avalonia.Controls.DockControl>().First().Layout!;
+            var view = ((WorkspaceFactory)root.Factory!).Panels["watcher"].View!;
+            var host = (Window)TopLevel.GetTopLevel(view)!;
+            host.Width = 620; host.Height = 480; host.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            var cell = host.GetVisualDescendants().OfType<Grid>().Single(g => g.Name == "WatchValueCell");
+            var editor = cell.Children.OfType<TextBox>().Single();
+            var error = cell.Children.OfType<TextBlock>().Single(t => t.Name == "WatchValueError");
+            var list = host.GetVisualDescendants().OfType<ListBox>().First(l => l.ItemsSource is System.Collections.ObjectModel.ObservableCollection<WatchRow>);
+            Assert.DoesNotContain(host.GetVisualDescendants().OfType<TextBlock>(), t => t.Text == "Type");
+            var point = cell.TranslatePoint(new Point(12, 12), host)!.Value;
+            host.MouseDown(point, MouseButton.Left); host.MouseUp(point, MouseButton.Left);
+            host.MouseDown(point, MouseButton.Left); host.MouseUp(point, MouseButton.Left);
+            await WaitFor(() => editor.IsVisible);
+            Assert.Empty(host.OwnedWindows.OfType<WatchEditorDialog>());
+            foreach (var input in new[] { "-1", "4294967296", "1.5", "bad" })
+            {
+                editor.Text = input; host.KeyPressQwerty(PhysicalKey.Enter, RawInputModifiers.None);
+                await WaitFor(() => error.IsVisible);
+                Assert.True(editor.IsVisible);
+                Assert.DoesNotContain(backend.Calls, c => c.Operation == nameof(FakeBackend.WriteMemory));
+            }
+            // Delete must edit the text rather than remove the watch.
+            editor.SelectAll(); host.KeyPressQwerty(PhysicalKey.Delete, RawInputModifiers.None);
+            Assert.Single(WatchDocument.Load(watches).Nodes);
+            editor.Text = "42"; host.KeyPressQwerty(PhysicalKey.Enter, RawInputModifiers.None);
+            await WaitFor(() => !editor.IsVisible);
+            Assert.Equal(new byte[] { 0, 0, 0, 42 }, await service.ReadMemoryAsync(0x80000020, 4));
+            await WaitFor(() => cell.Children.OfType<TextBlock>().Any(t => t.Text == "42"));
+            Assert.True(list.Focus(), "List must receive keyboard focus"); host.KeyPressQwerty(PhysicalKey.Enter, RawInputModifiers.None); await WaitFor(() => editor.IsVisible);
+            editor.Text = "99"; host.KeyPressQwerty(PhysicalKey.Escape, RawInputModifiers.None);
+            Assert.False(editor.IsVisible);
+            Assert.True(list.Focus(), "List must receive keyboard focus"); host.KeyPressQwerty(PhysicalKey.Enter, RawInputModifiers.None); await WaitFor(() => editor.IsVisible);
+            editor.Text = "123"; list.Focus(); Assert.False(editor.IsVisible);
+            Assert.Single(backend.Calls, c => c.Operation == nameof(FakeBackend.WriteMemory));
+            Assert.Equal(new byte[] { 0, 0, 0, 42 }, await service.ReadMemoryAsync(0x80000020, 4));
+        }
+        finally { main.CloseAfterCapture(); }
+
+        static async Task WaitFor(Func<bool> condition)
+        {
+            for (var i = 0; i < 100 && !condition(); i++) { await Task.Delay(10); Dispatcher.UIThread.RunJobs(); }
+            Assert.True(condition());
+        }
+    }
     [AvaloniaFact]
     public void NewWatchWithoutPointerCanOpen()
     {

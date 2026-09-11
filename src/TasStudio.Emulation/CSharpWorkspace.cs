@@ -63,6 +63,10 @@ public static class CSharpWorkspace
             and StateId: project-start. Boot explicitly restarts the game from power-on.
             Existing inputs are preserved by AdvanceAsync. SetCurrentInputAsync explicitly
             authors the current group when your algorithm takes over.
+            LoadStateAsync(id, clearLaterInput: true) starts a fresh attempt at a checkpoint.
+            Optional TopPlays config retains the best K paths; SubmitPlayAsync freezes selected attempts.
+            Without submissions, TopPlays uses the returned ScoreField and the final executed path.
+            Use Studio's Top plays settings and View top plays menus to configure and apply winners.
             Successful and cancelled trial folders are cleaned after their results commit;
             failed trials retain logs/state for debugging. The source project stays unchanged.
             Add shared utilities as normal C# class libraries and ProjectReferences.

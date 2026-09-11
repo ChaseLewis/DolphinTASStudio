@@ -81,6 +81,7 @@ struct tas_host {
   bool (*begin_polls)(const tas_poll*, size_t, bool) = nullptr;
   bool (*end_polls)() = nullptr;
   size_t (*copy_polls)(tas_poll*, size_t) = nullptr;
+  size_t (*copy_boot_polls)(tas_poll*, size_t) = nullptr;
   unsigned (*audio_playback)(bool) = nullptr;
   size_t (*mix_audio)(int16_t*, size_t) = nullptr;
   bool pull_audio = false;
@@ -342,6 +343,7 @@ int tas_load(tas_host* h, const char* game) {
     // Boot requires the first retro_run. This becomes the application's initial boundary.
     h->run();
     if (!h->set_pad(0, &neutral)) throw std::runtime_error("Exact input injection failed. Single-core execution is required.");
+    h->copy_boot_polls = reinterpret_cast<decltype(h->copy_boot_polls)>(GetProcAddress(h->library, "dolphin_tas_copy_boot_polls"));
     h->get_system_av_info(&h->av);
   });
 }
@@ -363,6 +365,16 @@ int tas_replay_step(tas_host* h, const tas_pad* fallback, const tas_poll* polls,
 }); }
 size_t tas_polls(tas_host* h, tas_poll* polls, size_t capacity) {
   size_t result = 0; guarded(h, [&] { h->require_loaded(); result = h->copy_polls(polls, capacity); }); return result;
+}
+size_t tas_boot_polls(tas_host* h, tas_poll* polls, size_t capacity) {
+  size_t result = SIZE_MAX;
+  guarded(h, [&] {
+    h->require_loaded();
+    if (!h->copy_boot_polls) throw std::runtime_error("This core cannot capture startup polls. Update the core before exporting a Dolphin movie.");
+    result = h->copy_boot_polls(polls, capacity);
+    if (result == SIZE_MAX) throw std::runtime_error("Startup controller poll capture overflowed.");
+  });
+  return result;
 }
 int tas_reset(tas_host* h) { return guarded(h, [&] { h->require_loaded(); std::lock_guard lock(h->audio_mutex); h->reset(); }); }
 uint64_t tas_fields(tas_host* h) { uint64_t result = 0; guarded(h, [&] { h->require_loaded(); result = h->fields(); }); return result; }

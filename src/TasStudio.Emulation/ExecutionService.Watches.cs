@@ -8,6 +8,23 @@ public sealed partial class ExecutionService
     private long _sampleGeneration;
     public long SampleGeneration => Interlocked.Read(ref _sampleGeneration);
 
+    public Task WriteWatchAsync(WatchDefinition watch, string text, long expectedGeneration)
+    {
+        var captured = watch with { Offsets = watch.Offsets?.ToArray() };
+        var bytes = WatchMemory.ParseValue(captured, text);
+        return Enqueue(() =>
+        {
+            RequireLoaded();
+            if (_running || SampleGeneration != expectedGeneration || !Current())
+                throw new InvalidOperationException("Memory state changed. Cancel and edit the value again after pausing or seeking.");
+            // Resolve and write on the owner thread at the same boundary; replay uses this concrete address.
+            var value = WatchMemory.Read(Guid.Empty, captured, _backend.ReadMemory);
+            if (value.Error is { } error) throw new InvalidDataException(error);
+            AddEvent(new ExecutionEvent(_backend.Position, ExecutionEventKind.MemoryWrite, value.Address!.Value, bytes));
+            Notify("Memory updated");
+        });
+    }
+
     public Task<WatchSample> SampleWatchesAsync(IEnumerable<(Guid Id, WatchDefinition Watch)> watches)
     {
         // Own the request before enqueueing: callers may edit their pointer arrays meanwhile.
