@@ -1,9 +1,13 @@
 # Memory watcher design
 
-## Implemented iteration — September 6, 2026
+## Implemented iteration — September 11, 2026
 
-The native app now has a compact grouped watcher with double-click editing,
-double-click blank space to add, Insert/F2/Enter shortcuts and a context menu.
+The native app now has a compact grouped Name / Value watcher. Double-click a
+value to pause and edit in place with type/range validation; Enter applies and
+Escape or clicking away cancels. Writes use recorded memory events and resolve
+pointers at the paused execution boundary. Types remain in tooltips/settings.
+Double-click a name to edit its definition, double-click blank space to add,
+use Insert to add, F2 for definitions, or Enter for values, plus a context menu.
 Groups expand using their chevron; double-clicking a group edits its label.
 The editor is a modal with label, preview, address, value type, byte length where
 needed, and optional pointer offsets with resolved addresses. There is no separate
@@ -19,7 +23,7 @@ See [verification and current limits](../watcher-verification.md).
 
 The rest of this document is the original broader design proposal. Its selected-row
 editor and mandatory display control have been superseded by the compact dialog.
-Recorded memory writes, freezes, reordering, multi-select and manifest-referenced
+Freezes, reordering, multi-select and manifest-referenced
 watch assets remain future work. The accompanying `memory-watcher.html` is the
 earlier mock with illustrative values; it does not access memory.
 

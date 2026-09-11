@@ -17,6 +17,8 @@ TAS_API int tas_load(tas_host* host, const char* game);
 TAS_API int tas_step(tas_host* host, const tas_pad* pad);
 TAS_API int tas_replay_step(tas_host* host, const tas_pad* fallback, const tas_poll* polls, size_t count);
 TAS_API size_t tas_polls(tas_host* host, tas_poll* polls, size_t capacity);
+// Optional core capability; SIZE_MAX on unsupported capture or failure.
+TAS_API size_t tas_boot_polls(tas_host* host, tas_poll* polls, size_t capacity);
 TAS_API int tas_reset(tas_host* host);
 TAS_API uint64_t tas_fields(tas_host* host);
 TAS_API uint64_t tas_presentations(tas_host* host);

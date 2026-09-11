@@ -8,6 +8,14 @@ public sealed record BackendOptions(string CorePath, string SystemDirectory, str
 /// <summary>Studio's requested settings, not a readback of Dolphin's layered effective config.</summary>
 public sealed record SessionConfiguration(BackendOptions Options, string BackendIdentity);
 public sealed record EmulatorSnapshot(ulong Position, byte[] Data, VideoFrame? Preview = null);
+public sealed record GameCubeMovieCard(string FileName, byte[] Bytes);
+public sealed record GameCubeMovieBoot(GameCubeMovieCard[] Cards, InputPollFrame Inputs);
+
+/// <summary>Recover original cards and measured startup inputs, verifying boot timing/RAM and restoring the paused session.</summary>
+public interface IGameCubeMovieBootBackend
+{
+    GameCubeMovieBoot ExportMovieBoot(EmulatorSnapshot initial, string gamePath, BackendOptions options);
+}
 
 /// <summary>All members are invoked exclusively on the execution service's owner thread.</summary>
 public interface IEmulatorBackend : IDisposable
@@ -21,6 +29,8 @@ public interface IEmulatorBackend : IDisposable
     ulong Position { get; }
     /// <summary>Emulated video fields since boot, restored with the emulator state; distinct from timeline inputs.</summary>
     ulong VideoFieldCount => Position;
+    /// <summary>Exact CoreTiming ticks since boot, when supported by the backend.</summary>
+    ulong? EmulatedTicks => null;
     InputPollFrame? LastInputPollFrame => null;
     double FramesPerSecond { get; }
     event Action<VideoFrame>? VideoReady;

@@ -358,6 +358,7 @@ independent trials through the coordinator instead.
 | `SeekAsync(ulong group)` | Restore a valid baseline/state and replay to the worker group |
 | `SaveStateAsync(string name)` | Save a worker-owned named state; return its ID |
 | `LoadStateAsync(string id)` | Restore a valid worker state/marker |
+| `LoadStateAsync(string id, bool clearLaterInput)` | Optionally clear inputs from the restored group and events after it |
 | `DeleteStateAsync(string id)` | Delete a worker marker and owned state file; unknown/deletion failures throw |
 | `GetStatesAsync()` | Snapshot of IDs, names, groups and validity |
 | `AddTakeAsync(string name, int startGroup, IEnumerable<ControllerState> inputs)` | Add a worker candidate take without applying it; 1–100000 inputs |
@@ -496,10 +497,76 @@ database read-only from experiment code. Do not bypass the coordinator's writer.
 Logs are bounded to 100000 entries and 65536 characters per serialized entry. They
 are not the durable success result: return the information you want to query.
 
+## Optional top plays and input submission
+
+Existing experiments can keep returning their typed results without submitting inputs.
+Retention is **off by default**. Enable it through the state's **Experiment → Top plays
+settings** menu, or add this to `experiment.tascsharp.json`:
+
+```json
+"TopPlays": { "ScoreField": "Score", "HigherIsBetter": true, "Keep": 10 }
+```
+
+`Keep` is 1–1000, across the whole batch. The score field is an exact JSON member
+name containing a finite number; ranking uses double precision. All typed score rows
+remain available, but only the best K play snapshots are retained. Equal scores favor
+the lower trial index, then the earlier submission. Settings are frozen with each batch.
+
+If a trial makes no explicit submissions, its final executed path is captured automatically
+using the returned score. A missing score, empty path, or stale preview produces a play
+warning while preserving the successful typed result. The path starts where `RunAsync`
+began, after state restoration and preroll, and ends at the current next-input group.
+Unexecuted future inputs are excluded.
+
+For a search with several attempts inside one trial, submit each candidate explicitly:
+
+```csharp
+var checkpoint = await context.Emulator.SaveStateAsync("Before attempt");
+foreach (var variant in variants)
+{
+    await context.Emulator.LoadStateAsync(checkpoint, clearLaterInput: true);
+    var score = await PlayAttemptAsync(context, variant, token);
+    await context.SubmitPlayAsync(score, name: $"Variant {variant}", cancellationToken: token);
+}
+```
+
+`LoadStateAsync(id)` retains its original behavior. The new two-argument overload restores
+the checkpoint and, when requested, clears inputs **starting at its next-input group** and
+events **after** that group. Events already reflected in the checkpoint are preserved.
+The operation affects only that worker. Saved states still require matching preceding
+history; clearing future input does not make an invalid checkpoint valid.
+
+`SubmitPlayAsync` freezes the complete current path from the script start, including
+shared prefixes, controller polls and execution events. Subsequent edits/reloads cannot
+change that snapshot. Submissions require a current preview and 1–1,000,000 executed
+groups, with unchanged history before the script start. Explicit submissions suppress
+automatic final capture for that trial. When TopPlays is disabled, submission is a no-op.
+The existing SDK constructor and one-argument load method remain binary compatible;
+using the new API requires rebuilding the experiment against the new SDK.
+
+Each worker keeps its local K candidates. The coordinator commits those candidates
+and the typed result together when the trial completes successfully, then prunes to the
+global K in the same SQLite transaction. Plays from unfinished, cancelled or failed
+trials do not enter the global ranking. A forced termination can lose in-flight submissions.
+Snapshots are compressed in the `plays` table, independent of disposable trial folders;
+cleanup and resume preserve them. Old score-only runs cannot recover discarded inputs.
+
+Choose **Top plays…** in the run window, or **View top plays** in the state's experiment
+menu to reopen previous batches. Refresh shows committed candidates in score order.
+Discovery supports both Studio's `.runs/<run>/batch/results.sqlite` layout and CLI
+batches written directly to `.runs/<run>/results.sqlite`; existing captures need no
+rerun or folder move. This picker is in Studio, not the VS Code extension.
+Select one and choose **Apply to Active playback**. This replaces that play's original
+input range and its execution events, preserves inputs outside the range, and is one
+undoable edit. Seek afterward to preview it. The starting project/history must match;
+plays created with a different power-on UTC or baseline cannot simply be pasted into
+an incompatible active project.
+
 ## Cancellation, retention, and resume
 
 - Successful and cancelled trial folders are removed **after a successful SQLite
-  commit and worker exit**. Successful typed trials do not export result timelines.
+  commit and worker exit**. Successful typed trials do not export full result projects;
+  optional top-K play snapshots remain in SQLite.
 - Failed/timed-out trials keep diagnostics, profiles and saved result projects when
   available. A database write failure also preserves evidence for recovery.
 - The batch keeps its source/compiled snapshots and SQLite database. Full result
@@ -522,10 +589,10 @@ the separate wall-clock worker limit, including boot/initialization/preroll. Che
 cancellation inside CPU-only loops as well as around emulator operations. An
 unresponsive worker can be terminated after the cancellation grace period.
 
-An AddTakeAsync result stays in the worker. With successful artifact cleanup enabled
-it is not a retained main-project take or replay. There is currently no dedicated
-successful-artifact retention flag or single-index rerun command in the public config.
-Do not promise an AI-generated tool can open every successful run's movie afterward.
+An AddTakeAsync result stays in the worker and is not automatically submitted as a play.
+TopPlays retains the executed active path, not unplayed takes. There is no full successful
+project retention flag or single-index rerun command. Only retained top-K paths can be
+applied afterward; other successful runs still retain their score results only.
 
 ## AI authoring checklist
 

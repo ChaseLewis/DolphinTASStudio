@@ -18,5 +18,7 @@ internal sealed record ExperimentOutputResult(int Index, string Name, string Sta
     JsonElement? Value, string? ProjectPath)
 {
     public string? CompatibilityWarning { get; init; }
+    public string? PlayWarning { get; init; }
+    public ExperimentPlay[]? Plays { get; init; }
     public T? GetValue<T>() => Value is { ValueKind: not JsonValueKind.Null } value ? value.Deserialize<T>() : default;
 }

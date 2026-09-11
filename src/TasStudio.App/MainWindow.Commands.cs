@@ -13,6 +13,7 @@ public sealed partial class MainWindow
     private static readonly FilePickerFileType StateFiles = new("TAS Studio state") { Patterns = ["*.tasstate"] };
     private static readonly FilePickerFileType ProjectFiles = new("TAS Studio project / replay") { Patterns = ["*.tasproj", "*.tasreplay"] };
     private static readonly FilePickerFileType ReplayFiles = new("Baked TAS replay") { Patterns = ["*.tasreplay"] };
+    private static readonly FilePickerFileType DolphinMovieFiles = new("Dolphin input recording") { Patterns = ["*.dtm"] };
     private async Task<string?> PickOpen(string title, FilePickerFileType type)
     {
         _dialogOpen = true;
@@ -280,6 +281,30 @@ public sealed partial class MainWindow
     {
         var path = await PickSave("Export baked active playback", ReplayFiles, "movie.tasreplay", "tasreplay");
         if (path != null) await _execution.ExportReplayAsync(path);
+    }
+    private async Task ExportDolphinMovie(DolphinMovieExportMode mode)
+    {
+        var path = await PickSave($"Export to Dolphin — {mode}", DolphinMovieFiles, "movie.dtm", "dtm");
+        if (path == null) return;
+        DolphinMovieExportResult? result = null;
+        await WithGameLoading(async progress =>
+        {
+            var baking = new Progress<DolphinMovieExportProgress>(update =>
+            {
+                var fraction = (double)update.CompletedGroups / update.TotalGroups;
+                progress.Report(update.Stage switch
+                {
+                    DolphinMovieExportStage.CheckingCache => new("Checking cached controller polls…"),
+                    DolphinMovieExportStage.Baking => new($"Baking inputs: {update.CompletedGroups:N0} / {update.TotalGroups:N0} groups ({fraction:P0})", fraction),
+                    DolphinMovieExportStage.Restoring => new("Restoring your paused position…"),
+                    DolphinMovieExportStage.MemoryCards => new("Recovering startup inputs and the original memory card…"),
+                    DolphinMovieExportStage.Writing => new("Writing the Dolphin movie and playback files…"),
+                    _ => new("Preparing the movie for export…")
+                });
+            });
+            result = await _execution.ExportDolphinMovieAsync(path, baking, mode);
+        }, title: $"Exporting to Dolphin — {mode}", detail: "Preparing the movie for export…");
+        await ShowMessage("Dolphin movie exported", $"Exported {result!.InputCount:N0} controller polls.\n\nDouble-click this launcher to play with the supplied settings and original memory card:\n{result.LauncherPath}\n\nSelect your Dolphin.exe the first time. Opening the DTM from your regular Dolphin profile will not use the exported settings or card. More details are in the accompanying README.txt.");
     }
     private async Task<string?> HashRomWithProgress(string path)
     {

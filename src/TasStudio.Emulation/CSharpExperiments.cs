@@ -95,6 +95,8 @@ internal sealed class ExperimentEmulator(ExecutionService execution, Cancellatio
         return execution.StateMarkers.Single(s => !existing.Contains(s.Id) && !s.Automatic).Id;
     });
     public Task LoadStateAsync(string id) => Call(() => execution.LoadMarkerAsync(id));
+    public Task LoadStateAsync(string id, bool clearLaterInput) => Call(() => execution.LoadMarkerAsync(id, clearLaterInput));
+    internal Task SubmitPlayAsync(Func<Task> submit) => Call(submit);
     public Task DeleteStateAsync(string id) => Call(() => execution.ClearMarkerAsync(id, requireFileDeletion: true));
     public Task<IReadOnlyList<ExperimentState>> GetStatesAsync() => Call(() => Task.FromResult<IReadOnlyList<ExperimentState>>(
         Array.AsReadOnly(execution.StateMarkers.Select(s => new ExperimentState(s.Id, s.Name, s.Position, s.Valid)).ToArray())));

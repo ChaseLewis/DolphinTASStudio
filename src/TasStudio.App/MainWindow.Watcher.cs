@@ -20,6 +20,7 @@ internal sealed class WatchRow(WatchNode node, int depth) : INotifyPropertyChang
 {
     public WatchNode Node { get; } = node;
     public int Depth { get; } = depth;
+    public Func<Task>? EditValue { get; set; }
     public string ValueText { get; private set; } = node.Diagnostic is null ? "???" : "Unsupported";
     public string? ValueDetail { get; private set; } = node.Diagnostic;
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -37,12 +38,13 @@ public sealed partial class MainWindow
     private bool _watchSaveBlocked;
     private readonly HashSet<Guid> _expandedWatches = [];
     private readonly ObservableCollection<WatchRow> _watchRows = [];
-    private readonly ListBox _watchList = new() { Background = Brushes.Transparent, BorderThickness = new Thickness(0) };
+    private readonly ListBox _watchList = new() { Focusable = true, Background = Brushes.Transparent, BorderThickness = new Thickness(0) };
     private readonly TextBlock _watchSampleLabel = new() { FontSize = 11, Foreground = StudioTheme.Brush(ThemeColor.Muted), TextWrapping = TextWrapping.Wrap };
     private Control? _watchView;
     private long _watchVersion, _watchRequestedGeneration = -1;
     private bool _watchSampling;
     private WatchSample? _watchSample;
+    private Action? _cancelWatchValueEdit;
 
     private Control BuildWatcher()
     {
@@ -55,10 +57,9 @@ public sealed partial class MainWindow
         toolbar.Children.Add(Action("Import…", ImportWatches));
         toolbar.Children.Add(Action("Refresh", RefreshWatches));
         root.Children.Add(toolbar);
-        var headings = new Grid { ColumnDefinitions = new("*,110,75"), Margin = new Thickness(8, 0, 8, 3), ColumnSpacing = 6 };
+        var headings = new Grid { ColumnDefinitions = new("*,160"), Margin = new Thickness(8, 0, 8, 3), ColumnSpacing = 6 };
         headings.Children.Add(new TextBlock { Text = "Name", FontSize = 11 });
         var value = new TextBlock { Text = "Value", FontSize = 11 }; Grid.SetColumn(value, 1); headings.Children.Add(value);
-        var type = new TextBlock { Text = "Type", FontSize = 11 }; Grid.SetColumn(type, 2); headings.Children.Add(type);
         Grid.SetRow(headings, 1); root.Children.Add(headings);
         var rowStyle = new Style(s => s.OfType<ListBoxItem>());
         rowStyle.Setters.Add(new Setter(TemplatedControl.PaddingProperty, new Thickness(5, 1)));
@@ -75,19 +76,22 @@ public sealed partial class MainWindow
         _watchList.AddHandler(PointerPressedEvent, async (_, e) =>
         {
             if (e.ClickCount != 2 || !e.GetCurrentPoint(_watchList).Properties.IsLeftButtonPressed ||
-                (e.Source as Visual)?.GetSelfAndVisualAncestors().Any(v => v is Button or ScrollBar) == true) return;
+                (e.Source as Visual)?.GetSelfAndVisualAncestors().Any(v => v is Button or ScrollBar or TextBox || v is Grid { Name: "WatchValueCell" }) == true) return;
             var row = (e.Source as Visual)?.GetSelfAndVisualAncestors().OfType<ListBoxItem>().FirstOrDefault()?.DataContext as WatchRow;
             e.Handled = true; await Perform(() => EditWatch(row?.Node, false));
         }, Avalonia.Interactivity.RoutingStrategies.Tunnel, handledEventsToo: true);
         _watchList.KeyDown += async (_, e) =>
         {
-            if (e.Key is Key.F2 or Key.Enter) { e.Handled = true; await Perform(() => EditWatch((_watchList.SelectedItem as WatchRow)?.Node, false)); }
+            if (e.Handled || (e.Source as Visual)?.GetSelfAndVisualAncestors().Any(v => v is TextBox) == true) return;
+            if (e.Key == Key.Enter && (_watchList.SelectedItem as WatchRow)?.EditValue is { } editValue) { e.Handled = true; await Perform(editValue); }
+            else if (e.Key is Key.F2 or Key.Enter) { e.Handled = true; await Perform(() => EditWatch((_watchList.SelectedItem as WatchRow)?.Node, false)); }
             else if (e.Key == Key.Insert) { e.Handled = true; await Perform(() => EditWatch(null, false)); }
             else if (e.Key == Key.Delete) { e.Handled = true; await Perform(RemoveWatch); }
         };
         var menu = new ContextMenu();
         menu.ItemsSource = new Control[]
         {
+            ActionMenu("Edit value", () => (_watchList.SelectedItem as WatchRow)?.EditValue?.Invoke() ?? Task.CompletedTask),
             ActionMenu("Edit…", () => EditWatch((_watchList.SelectedItem as WatchRow)?.Node, false)),
             ActionMenu("Add watch…", () => EditWatch(null, false)), ActionMenu("Add group…", () => EditWatch(null, true)),
             ActionMenu("Remove", RemoveWatch)
@@ -102,7 +106,7 @@ public sealed partial class MainWindow
     private Control BuildWatchRow(WatchRow row)
     {
         var node = row.Node;
-        var grid = new Grid { ColumnDefinitions = new("*,110,75"), ColumnSpacing = 6 };
+        var grid = new Grid { ColumnDefinitions = new("*,160"), ColumnSpacing = 6 };
         var name = new Grid { ColumnDefinitions = new("Auto,*"), Margin = new Thickness(row.Depth * 12, 0, 0, 0) };
         if (node.IsGroup)
         {
@@ -117,12 +121,70 @@ public sealed partial class MainWindow
             var value = new TextBlock { DataContext = row, FontFamily = FontFamily.Parse("Consolas"), FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
             value.Bind(TextBlock.TextProperty, new Binding(nameof(WatchRow.ValueText)));
             value.Bind(ToolTip.TipProperty, new Binding(nameof(WatchRow.ValueDetail)));
-            Grid.SetColumn(value, 1); grid.Children.Add(value);
-            var type = new TextBlock { Text = node.Watch is { } watch ? WatchTypeLabel(watch) : "—", FontSize = 11, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
-            Grid.SetColumn(type, 2); grid.Children.Add(type);
+            var cell = new Grid { Name = "WatchValueCell", RowDefinitions = new("Auto,Auto"), Background = Brushes.Transparent };
+            cell.Children.Add(value);
+            if (node.Watch is { } watch && node.Diagnostic is null)
+            {
+                var editor = new TextBox { Name = "WatchValueEditor", IsVisible = false, FontFamily = value.FontFamily, FontSize = 12, MinHeight = 24, Padding = new Thickness(3, 1) };
+                var error = new TextBlock { Name = "WatchValueError", IsVisible = false, FontSize = 11, Foreground = Brushes.IndianRed, TextWrapping = TextWrapping.Wrap };
+                cell.Children.Add(editor); Grid.SetRow(error, 1); cell.Children.Add(error);
+                ToolTip.SetTip(editor, $"{WatchTypeLabel(watch)} · {watch.Display}\nEnter to apply; Escape or click away to cancel.");
+                var editing = false; var writing = false; var generation = -1L; var original = "";
+                void Cancel()
+                {
+                    editing = false; editor.IsVisible = false; value.IsVisible = true; error.IsVisible = false;
+                    if (_cancelWatchValueEdit == Cancel) _cancelWatchValueEdit = null;
+                }
+                row.EditValue = async () =>
+                {
+                    if (editing) { editor.Focus(); return; }
+                    if (!_execution.IsLoaded) { _watchSampleLabel.Text = "Load a game before editing memory."; return; }
+                    _cancelWatchValueEdit?.Invoke();
+                    await _execution.PauseAsync();
+                    var version = _watchVersion;
+                    var sample = await _execution.SampleWatchesAsync([(node.Id, watch)]);
+                    if (version != _watchVersion || !_watchRows.Contains(row)) return;
+                    if (!sample.Current || sample.Generation != _execution.SampleGeneration)
+                        throw new InvalidOperationException("Seek to the current history before editing memory.");
+                    var sampled = sample.Values[0];
+                    if (sampled.Error is { } message) throw new InvalidDataException(message);
+                    original = WatchMemory.Format(watch, sampled.Bytes); generation = sample.Generation;
+                    editor.Text = original; editing = true; _cancelWatchValueEdit = Cancel;
+                    value.IsVisible = false; editor.IsVisible = true; editor.Focus(); editor.SelectAll();
+                };
+                cell.AddHandler(PointerPressedEvent, async (_, e) =>
+                {
+                    if (e.ClickCount != 2 || !e.GetCurrentPoint(cell).Properties.IsLeftButtonPressed || editing) return;
+                    e.Handled = true; _watchList.SelectedItem = row; await Perform(row.EditValue);
+                }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+                editor.KeyDown += async (_, e) =>
+                {
+                    if (e.Key == Key.Escape) { e.Handled = true; if (!writing) { Cancel(); _watchList.Focus(); } return; }
+                    if (e.Key != Key.Enter) return;
+                    e.Handled = true;
+                    if (!editing || writing || _busy) return;
+                    if (editor.Text == original) { Cancel(); _watchList.Focus(); return; }
+                    await Perform(async () =>
+                    {
+                        writing = true; editor.IsReadOnly = true;
+                        try
+                        {
+                            await _execution.WriteWatchAsync(watch, editor.Text ?? "", generation);
+                            Cancel(); _watchList.Focus(); await SampleVisibleWatches();
+                        }
+                        catch (Exception ex) when (ex is FormatException or OverflowException or InvalidDataException or InvalidOperationException or ArgumentException)
+                        { error.Text = ex.Message; error.IsVisible = true; }
+                        finally { writing = false; editor.IsReadOnly = false; }
+                    });
+                };
+                editor.TextChanged += (_, _) => error.IsVisible = false;
+                editor.LostFocus += (_, _) => { if (!writing) Cancel(); };
+                cell.DetachedFromVisualTree += (_, _) => Cancel();
+            }
+            Grid.SetColumn(cell, 1); grid.Children.Add(cell);
         }
-        else Grid.SetColumnSpan(name, 3);
-        ToolTip.SetTip(grid, node.Name + (node.Watch is { } w ? $"\n0x{w.Address:X8}" + string.Concat((w.Offsets ?? []).Select(o => " → " + WatchMemory.OffsetText(o))) : "") + (node.Diagnostic is { } d ? "\n" + d : ""));
+        else Grid.SetColumnSpan(name, 2);
+        ToolTip.SetTip(grid, node.Name + (node.Watch is { } w ? $"\n{WatchTypeLabel(w)} · 0x{w.Address:X8}" + string.Concat((w.Offsets ?? []).Select(o => " → " + WatchMemory.OffsetText(o))) : "") + (node.Diagnostic is { } d ? "\n" + d : ""));
         return grid;
     }
     private static string WatchTypeLabel(WatchDefinition watch) => watch.Type switch
@@ -165,6 +227,7 @@ public sealed partial class MainWindow
     }
     private void RebuildWatches(Guid? selected = null)
     {
+        _cancelWatchValueEdit?.Invoke();
         selected ??= (_watchList.SelectedItem as WatchRow)?.Node.Id;
         _watchRows.Clear();
         void Add(WatchNode[] nodes, int depth)

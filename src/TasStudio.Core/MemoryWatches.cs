@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Globalization;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -149,6 +150,77 @@ public sealed record WatchHop(uint ReadAddress, uint Pointer, int Offset, uint R
 public sealed record WatchValue(Guid Id, uint? Address, byte[] Bytes, WatchHop[] Hops, string? Error);
 public static class WatchMemory
 {
+    public static byte[] ParseValue(WatchDefinition watch, string text)
+    {
+        watch.Validate();
+        var bytes = new byte[watch.ByteCount];
+        if (watch.Type == WatchType.Text)
+        {
+            var decoded = new StringBuilder();
+            for (var i = 0; i < text.Length; i++)
+            {
+                var c = text[i];
+                if (c == '\\')
+                {
+                    if (++i == text.Length) throw new FormatException("Incomplete text escape. Use \\\\ for a backslash.");
+                    c = text[i] switch { '\\' => '\\', 'r' => '\r', 'n' => '\n', 't' => '\t', _ => throw new FormatException("Use \\\\, \\r, \\n or \\t for text escapes.") };
+                }
+                if (c == '\0') throw new FormatException("Text cannot contain a null character.");
+                decoded.Append(c);
+            }
+            var utf8 = new UTF8Encoding(false, true);
+            if (utf8.GetByteCount(decoded.ToString()) > bytes.Length)
+                throw new FormatException($"Text must fit in {bytes.Length} UTF-8 bytes.");
+            utf8.GetBytes(decoded.ToString(), bytes);
+            return bytes; // Short strings clear the remainder of the fixed-size field.
+        }
+        if (watch.Type == WatchType.Bytes)
+        {
+            var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != bytes.Length) throw new FormatException($"Enter exactly {bytes.Length} space-separated byte values.");
+            var display = watch.Display == WatchDisplay.Auto ? WatchDisplay.Hex : watch.Display;
+            for (var i = 0; i < parts.Length; i++) bytes[i] = (byte)ParseInteger(parts[i], display, 8, false);
+            return bytes;
+        }
+        if (watch.Type == WatchType.Float32)
+        {
+            if (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || !float.IsFinite(value))
+                throw new FormatException("Enter a finite Float32 value within its range.");
+            BinaryPrimitives.WriteSingleBigEndian(bytes, value); return bytes;
+        }
+        if (watch.Type == WatchType.Float64)
+        {
+            if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || !double.IsFinite(value))
+                throw new FormatException("Enter a finite Float64 value within its range.");
+            BinaryPrimitives.WriteDoubleBigEndian(bytes, value); return bytes;
+        }
+        var signed = watch.Type is WatchType.S8 or WatchType.S16 or WatchType.S32 or WatchType.S64;
+        var raw = ParseInteger(text, watch.Display, bytes.Length * 8, signed);
+        for (var i = bytes.Length - 1; i >= 0; i--) { bytes[i] = (byte)(raw & 255); raw >>= 8; }
+        return bytes;
+    }
+    private static BigInteger ParseInteger(string text, WatchDisplay display, int bits, bool signed)
+    {
+        text = text.Trim();
+        var radix = display switch { WatchDisplay.Hex => 16, WatchDisplay.Octal => 8, WatchDisplay.Binary => 2, _ => 10 };
+        var negative = text.StartsWith('-');
+        if (negative || text.StartsWith('+')) text = text[1..];
+        var prefix = radix switch { 16 => "0x", 8 => "0o", 2 => "0b", _ => "" };
+        if (prefix.Length > 0 && text.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) text = text[2..];
+        var limit = BigInteger.One << bits;
+        var max = signed && (radix == 10 || negative) ? (limit >> 1) - (negative ? 0 : 1) : limit - 1;
+        if (negative && !signed) throw new FormatException("Unsigned values cannot be negative.");
+        if (text.Length == 0) throw new FormatException($"Enter a base-{radix} integer.");
+        BigInteger value = 0;
+        foreach (var c in text)
+        {
+            var digit = c is >= '0' and <= '9' ? c - '0' : c is >= 'a' and <= 'f' ? c - 'a' + 10 : c is >= 'A' and <= 'F' ? c - 'A' + 10 : -1;
+            if (digit < 0 || digit >= radix) throw new FormatException($"Enter a base-{radix} integer.");
+            value = value * radix + digit;
+            if (value > max) throw new FormatException($"Value is outside the {(signed ? "signed" : "unsigned")} {bits}-bit range.");
+        }
+        return negative && value != 0 ? limit - value : value;
+    }
     public static uint ParseAddress(string text) => uint.Parse(text.Trim().Replace("0x", "", StringComparison.OrdinalIgnoreCase), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
     public static int ParseOffset(string text)
     {
@@ -193,7 +265,7 @@ public static class WatchMemory
         if (watch.Type == WatchType.Text)
         {
             var end = bytes.IndexOf((byte)0); if (end >= 0) bytes = bytes[..end];
-            try { return new UTF8Encoding(false, true).GetString(bytes).Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t"); }
+            try { return new UTF8Encoding(false, true).GetString(bytes).Replace("\\", "\\\\").Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t"); }
             catch (DecoderFallbackException) { return Convert.ToHexString(bytes) + " (invalid UTF-8)"; }
         }
         if (watch.Type == WatchType.Bytes)

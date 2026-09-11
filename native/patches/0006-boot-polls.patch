@@ -1,0 +1,67 @@
+diff --git a/Source/Core/Core/Tas.h b/Source/Core/Core/Tas.h
+index 7299d22..4ffb751 100644
+--- a/Source/Core/Core/Tas.h
++++ b/Source/Core/Core/Tas.h
+@@ -39,4 +39,7 @@ inline u64 poll_start_ticks = 0, poll_start_fields = 0;
+ inline size_t replay_cursor = 0;
+ inline bool collect_polls = false, replaying_polls = false, poll_mismatch = false;
+ inline constexpr size_t MAX_POLLS = 100000;
++// Passive observations before the frontend installs its first input. Not savestate data.
++inline std::vector<Poll> boot_polls;
++inline bool boot_poll_overflow = false;
+ }  // namespace Core::Tas
+diff --git a/Source/Core/Core/HW/GCPad.cpp b/Source/Core/Core/HW/GCPad.cpp
+index 8627b5b..ba8d471 100644
+--- a/Source/Core/Core/HW/GCPad.cpp
++++ b/Source/Core/Core/HW/GCPad.cpp
+@@ -99,7 +99,20 @@ GCPadStatus GetStatus(int pad_num)
+     return pad;
+   }
+ #endif
+-  return static_cast<GCPad*>(s_config.GetController(pad_num))->GetInput();
++  const auto pad = static_cast<GCPad*>(s_config.GetController(pad_num))->GetInput();
++#ifdef __LIBRETRO__
++  if (!Core::Tas::pad_enabled[0])
++  {
++    namespace Tas = Core::Tas;
++    if (Tas::boot_polls.size() < Tas::MAX_POLLS)
++      Tas::boot_polls.push_back({Core::System::GetInstance().GetCoreTiming().GetTicks(),
++          Tas::field_count, static_cast<u32>(pad_num), pad.button,
++          pad.stickX, pad.stickY, pad.substickX, pad.substickY, pad.triggerLeft, pad.triggerRight});
++    else
++      Tas::boot_poll_overflow = true;
++  }
++#endif
++  return pad;
+ }
+ 
+ ControllerEmu::ControlGroup* GetGroup(int pad_num, PadGroup group)
+diff --git a/Source/Core/DolphinLibretro/Main.cpp b/Source/Core/DolphinLibretro/Main.cpp
+index 9c60aa0..b7a0de3 100644
+--- a/Source/Core/DolphinLibretro/Main.cpp
++++ b/Source/Core/DolphinLibretro/Main.cpp
+@@ -230,6 +230,15 @@ DOLPHIN_TAS_EXPORT uint64_t dolphin_tas_get_pad_poll_count(unsigned port)
+   return port < Core::Tas::PORT_COUNT ? Core::Tas::pad_poll_counts[port] : 0;
+ }
+ 
++// Optional ABI 3 extension. SIZE_MAX means the boot observation overflowed.
++DOLPHIN_TAS_EXPORT size_t dolphin_tas_copy_boot_polls(Core::Tas::Poll* output, size_t capacity)
++{
++  if (Core::Tas::boot_poll_overflow) return SIZE_MAX;
++  const auto& polls = Core::Tas::boot_polls;
++  if (output && capacity >= polls.size()) std::copy(polls.begin(), polls.end(), output);
++  return polls.size();
++}
++
+ DOLPHIN_TAS_EXPORT bool dolphin_tas_get_last_polled_pad(unsigned port, DolphinTasPad* output)
+ {
+   if (port >= Core::Tas::PORT_COUNT || !output || !Core::Tas::pad_poll_counts[port])
+@@ -274,6 +283,8 @@ cb(RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO, (void*)subsystems);
+ 
+ void retro_init(void)
+ {
++  Core::Tas::boot_polls.clear();
++  Core::Tas::boot_poll_overflow = false;
+ #ifdef DOLPHIN_TAS_TRACE
+   Core::TasTrace::owner = std::this_thread::get_id();
+ #endif

@@ -1,6 +1,6 @@
 function Install-CorePatches([string]$CorePath, [string]$PatchDirectory) {
     Install-BaseCorePatches $CorePath $PatchDirectory
-    foreach ($name in @('0003-play-memory-card-size.patch', '0004-d3d-logic-ops.patch', '0005-realtime-audio.patch')) {
+    foreach ($name in @('0003-play-memory-card-size.patch', '0004-d3d-logic-ops.patch', '0005-realtime-audio.patch', '0006-boot-polls.patch')) {
         $patch = Join-Path $PatchDirectory $name
         & git -C $CorePath apply --reverse --check $patch 2>$null
         if ($LASTEXITCODE -ne 0) {
@@ -13,8 +13,11 @@ function Install-CorePatches([string]$CorePath, [string]$PatchDirectory) {
 function Install-BaseCorePatches([string]$CorePath, [string]$PatchDirectory) {
     $basePatch = Join-Path $PatchDirectory '0001-tas-contract.patch'
     $tracePatch = Join-Path $PatchDirectory '0002-tas-trace.patch'
+    $bootPatch = Join-Path $PatchDirectory '0006-boot-polls.patch'
+    & git -C $CorePath apply --reverse --check $bootPatch 2>$null
+    $bootApplied = $LASTEXITCODE -eq 0
     & git -C $CorePath apply --reverse --check $tracePatch 2>$null
-    if ($LASTEXITCODE -eq 0) {
+    if ($LASTEXITCODE -eq 0 -or $bootApplied) {
         $previousIndex = $env:GIT_INDEX_FILE
         $temporaryIndex = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString() + '.index')
         try {
@@ -24,6 +27,8 @@ function Install-BaseCorePatches([string]$CorePath, [string]$PatchDirectory) {
             if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate core patch paths' }
             $paths = @($paths | ForEach-Object { ($_ -split "`t")[2] } | Sort-Object -Unique)
             Invoke-Checked git (@('-C', $CorePath, 'add', '--') + $paths)
+            # The boot extension overlaps base/trace context; validate those layers without it.
+            if ($bootApplied) { Invoke-Checked git @('-C', $CorePath, 'apply', '--cached', '--reverse', $bootPatch) }
             Invoke-Checked git @('-C', $CorePath, 'apply', '--cached', '--reverse', $tracePatch)
             Invoke-Checked git @('-C', $CorePath, 'apply', '--cached', '--reverse', '--check', $basePatch)
         }

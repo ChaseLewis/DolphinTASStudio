@@ -15,6 +15,7 @@ internal class FakeBackend : IEmulatorBackend
     public ulong Position { get; private set; }
     public ulong FieldsPerStep { get; set; } = 1;
     public ulong VideoFieldCount => Position * FieldsPerStep;
+    public ulong? EmulatedTicks => VideoFieldCount * 1000;
     public bool RecordPolls { get; set; }
     public int PollsPerStep { get; set; } = 4;
     public InputPollFrame? LastInputPollFrame { get; private set; }
@@ -89,7 +90,7 @@ internal class FakeBackend : IEmulatorBackend
         Position = snapshot.Position;
         _accumulator = BitConverter.ToInt32(snapshot.Data, sizeof(ulong));
     }
-    public byte[] ReadMemory(uint address, int count)
+    public virtual byte[] ReadMemory(uint address, int count)
     {
         Record(nameof(ReadMemory));
         if (count != sizeof(int)) throw new ArgumentOutOfRangeException(nameof(count));

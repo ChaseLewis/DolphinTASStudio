@@ -25,6 +25,11 @@ public sealed class ExecutionHistory
     }
     public string At(ulong position)
     {
+        BeforeEventsAt(position);
+        return Convert.ToHexString(AfterEvents((int)position));
+    }
+    internal string BeforeEventsAt(ulong position)
+    {
         if (position > (ulong)_inputs.Count) throw new ArgumentOutOfRangeException(nameof(position));
         while (_prefixes.Count <= (int)position)
         {
@@ -49,7 +54,7 @@ public sealed class ExecutionHistory
                 }
             }));
         }
-        return Convert.ToHexString(AfterEvents((int)position));
+        return Convert.ToHexString(_prefixes[(int)position]);
     }
     private byte[] AfterEvents(int index) => Hash(writer =>
     {

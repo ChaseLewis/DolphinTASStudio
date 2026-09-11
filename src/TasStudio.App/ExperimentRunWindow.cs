@@ -19,7 +19,7 @@ internal sealed class ExperimentRunWindow : Window
     private readonly Queue<string> _lines = new();
     private const int MaximumDisplayLines = 150;
 
-    public ExperimentRunWindow(string worker, PreparedExperimentRun run)
+    public ExperimentRunWindow(string worker, PreparedExperimentRun run, Action? showPlays = null)
     {
         _run = run;
         Title = "Experiment run"; Width = 760; Height = 460;
@@ -35,6 +35,8 @@ internal sealed class ExperimentRunWindow : Window
             catch (Exception ex) { _status.Text = ex.Message; }
         };
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { _cancel, open } };
+        var plays = new Button { Content = "Top plays…", IsVisible = showPlays != null };
+        plays.Click += (_, _) => showPlays?.Invoke(); actions.Children.Add(plays);
         Grid.SetRow(actions, 2); root.Children.Add(actions); Content = root;
         _cancel.Click += (_, _) => Cancel();
         Closing += (_, _) => { if (!_finished) Cancel(); };

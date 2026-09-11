@@ -7,7 +7,7 @@ using TasStudio.Emulation;
 
 namespace TasStudio.Dolphin;
 
-public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend
+public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend, IGameCubeMovieBootBackend
 {
     private const string IdentityPrefix = "dolphin-tas-abi3/";
     private const int MaximumStateBytes = 256 * 1024 * 1024;
@@ -30,6 +30,7 @@ public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend
     public bool IsLoaded => _host != 0;
     public ulong Position => _position;
     public ulong VideoFieldCount => IsLoaded ? Native.tas_fields(_host) : 0;
+    public ulong? EmulatedTicks => IsLoaded ? Native.tas_ticks(_host) : null;
     public double FramesPerSecond => IsLoaded ? Native.tas_fps(_host) : 60;
     public event Action<VideoFrame>? VideoReady;
     public event Action<short[], int>? AudioReady;
@@ -186,6 +187,54 @@ public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend
     public void WriteMemory(uint address, byte[] bytes)
     { RequireLoaded(); Check(Native.tas_memory(_host, address, bytes, (nuint)bytes.Length, 1)); }
 
+    public GameCubeMovieBoot ExportMovieBoot(EmulatorSnapshot initial, string gamePath, BackendOptions options)
+    {
+        RequireLoaded();
+        // Check capability before changing the running session (older ABI 3 cores can still play).
+        ReadBootPolls();
+        var backup = Capture();
+        try
+        {
+            Restore(initial);
+            var ticks = EmulatedTicks!.Value;
+            var fields = VideoFieldCount;
+            var ram = ReadMemory(0x80000000, 24 * 1024 * 1024);
+            // As in Play card export, shutdown joins the raw card writer. Restoring the
+            // initial state marks its card contents dirty, so these are baseline bytes.
+            Stop();
+            var directory = Path.Combine(options.SaveDirectory, "User", "GC");
+            var cards = Directory.Exists(directory)
+                ? Directory.GetFiles(directory, "MemoryCardA.*.raw").Select(file =>
+                    new GameCubeMovieCard(Path.GetFileName(file), File.ReadAllBytes(file))).ToArray()
+                : [];
+            // Boot with the recovered initial card and the session's original options/INIs.
+            // Passive native capture observes actual inputs before frontend injection starts.
+            LoadGame(gamePath, options);
+            if (EmulatedTicks != ticks || VideoFieldCount != fields ||
+                !ram.AsSpan().SequenceEqual(ReadMemory(0x80000000, ram.Length)))
+                throw new InvalidDataException("Cannot reproduce the movie's initial boot boundary and RAM with its original card/settings. No Dolphin movie was written.");
+            var boot = new InputPollFrame(ControllerState.Neutral, fields, ticks, ReadBootPolls());
+            boot.Validate();
+            return new(cards, boot);
+        }
+        finally
+        {
+            if (!IsLoaded) LoadGame(gamePath, options);
+            Restore(backup);
+        }
+    }
+
+    private InputPoll[] ReadBootPolls()
+    {
+        var count = Native.tas_boot_polls(_host, null, 0);
+        if (count == nuint.MaxValue) throw new NotSupportedException(Error());
+        if (count > 100000) throw new InvalidDataException("Too many startup controller polls.");
+        var polls = new InputPoll[(int)count];
+        if (Native.tas_boot_polls(_host, polls, count) != count)
+            throw new InvalidDataException("Startup controller poll capture changed.");
+        return polls;
+    }
+
     public void Stop()
     {
         StopRealtimePlayback();
@@ -267,6 +316,7 @@ public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern int tas_step(nint host, in ControllerState input);
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern int tas_replay_step(nint host, in ControllerState input, [In] InputPoll[] polls, nuint count);
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern nuint tas_polls(nint host, [Out] InputPoll[]? polls, nuint capacity);
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern nuint tas_boot_polls(nint host, [Out] InputPoll[]? polls, nuint capacity);
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern int tas_reset(nint host);
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern ulong tas_fields(nint host);
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern ulong tas_presentations(nint host);

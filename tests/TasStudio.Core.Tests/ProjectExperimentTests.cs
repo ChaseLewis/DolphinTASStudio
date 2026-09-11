@@ -20,6 +20,26 @@ namespace TasStudio.Core.Tests;
 
 public sealed class ProjectExperimentTests
 {
+    [Fact]
+    public void PreviousBatchesFindsBothLayoutsAndSkipsFoldersWithoutResults()
+    {
+        using var files = new TestWorkspace();
+        var config = files.FilePath(ProjectExperiments.ConfigFileName);
+        Assert.Empty(ProjectExperiments.PreviousBatches(config));
+        var direct = Path.GetFullPath(files.FilePath(".runs/capture-entry-269-01"));
+        var nested = Path.GetFullPath(files.FilePath(".runs/studio-run/batch"));
+        var both = Path.GetFullPath(files.FilePath(".runs/both-layouts"));
+        foreach (var batch in new[] { direct, nested, both, Path.Combine(both, "batch") })
+        {
+            Directory.CreateDirectory(batch);
+            File.WriteAllText(Path.Combine(batch, "results.sqlite"), "Discovery must not modify the database");
+        }
+        Directory.CreateDirectory(files.FilePath(".runs/unfinished/batch"));
+        var found = ProjectExperiments.PreviousBatches(config);
+        Assert.Equal(new[] { nested, direct, Path.Combine(both, "batch"), both }, found);
+        Assert.All(found, batch => Assert.Equal("Discovery must not modify the database", File.ReadAllText(Path.Combine(batch, "results.sqlite"))));
+    }
+
     private static async Task<(string Project, StateMarker State)> Source(TestWorkspace files, ExecutionService execution)
     {
         await execution.LoadGameAsync(files.GamePath, files.Options);

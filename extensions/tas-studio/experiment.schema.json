@@ -19,6 +19,16 @@
     "StartUtcSeconds": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
     "PrerollSeconds": { "type": "number", "minimum": 0, "maximum": 86400, "default": 0 },
     "PrerollGroups": { "type": "integer", "minimum": 0, "maximum": 10000000, "default": 0 },
-    "Parameters": { "type": "object", "default": {} }
+    "Parameters": { "type": "object", "default": {} },
+    "TopPlays": {
+      "type": ["object", "null"],
+      "description": "Optional retention of the best K playable paths. Omit to retain scores only.",
+      "additionalProperties": false,
+      "properties": {
+        "ScoreField": { "type": "string", "minLength": 1, "default": "Score", "description": "Exact JSON result member used for automatic capture. Explicit SubmitPlayAsync calls supply their own finite double score." },
+        "HigherIsBetter": { "type": "boolean", "default": true },
+        "Keep": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 10 }
+      }
+    }
   }
 }

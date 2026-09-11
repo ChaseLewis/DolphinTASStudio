@@ -65,6 +65,25 @@ public static class ProjectExperiments
         WriteConfig(configPath, config);
     }
 
+    public static void SetTopPlays(string sourceProject, string configPath, ExperimentTopPlays? options)
+    {
+        configPath = RequireProjectConfig(sourceProject, configPath);
+        options?.Validate();
+        var config = ReadConfig(configPath);
+        if (options == null) config.Remove("TopPlays");
+        else config["TopPlays"] = JsonSerializer.SerializeToNode(options, ExperimentFiles.Json);
+        WriteConfig(configPath, config);
+    }
+
+    public static IReadOnlyList<string> PreviousBatches(string configPath)
+    {
+        var runs = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configPath))!, ".runs");
+        return !Directory.Exists(runs) ? [] : Directory.EnumerateDirectories(runs).OrderDescending(StringComparer.OrdinalIgnoreCase)
+            // Studio wraps batches in a run folder; CLI output may be the run folder itself.
+            .SelectMany(run => new[] { Path.Combine(run, "batch"), run })
+            .Where(batch => File.Exists(Path.Combine(batch, "results.sqlite"))).ToArray();
+    }
+
     public static string Remove(string sourceProject, string configPath)
     {
         configPath = RequireProjectConfig(sourceProject, configPath);
