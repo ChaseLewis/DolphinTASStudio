@@ -1,0 +1,30 @@
+using TasStudio.Core;
+using TasStudio.Sdk;
+
+public sealed record Parameters(int Groups = 1);
+public sealed record Result(int Trial, ulong StartGroup, ulong EndGroup, double Seconds);
+
+public sealed class Experiment : IExperiment<Result>
+{
+    // The runner restores the attached state before RunAsync. Its clock stays fixed.
+    public async Task<Result> RunAsync(ExperimentRunContext context, CancellationToken token)
+    {
+        var emulator = context.Emulator;
+        var options = context.GetParameters<Parameters>();
+        if (options.Groups is < 1 or > 10000) throw new ArgumentException("Groups must be 1–10000.");
+        var start = await emulator.GetPositionAsync();
+
+        // Replace this starter with your wait/variant selection and fight evaluator.
+        // context.Index is a stable candidate index, including after batch resume.
+        for (var group = 0; group < options.Groups; group++)
+        {
+            token.ThrowIfCancellationRequested();
+            // Explicitly replace recorded input at this boundary before advancing.
+            await emulator.SetCurrentInputAsync(ControllerState.Neutral);
+            await emulator.AdvanceAsync();
+        }
+
+        var end = await emulator.GetPositionAsync();
+        return new(context.Index, start.Group, end.Group, end.Seconds - start.Seconds);
+    }
+}

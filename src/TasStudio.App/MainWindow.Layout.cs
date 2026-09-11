@@ -15,6 +15,11 @@ public sealed partial class MainWindow
     private readonly TextBlock _playLabel = new() { Text = "Play", VerticalAlignment = VerticalAlignment.Center };
     private readonly PathIcon _playIcon = new() { Width = 17, Height = 17, Foreground = StudioTheme.Brush(ThemeColor.Icon) };
     private Button _transportPlay = null!;
+    private readonly TextBlock _compatibilityNotice = new()
+    {
+        Name = "CompatibilityNotice", IsVisible = false, TextWrapping = TextWrapping.Wrap,
+        FontSize = 12, Margin = new Thickness(10, 6), Foreground = StudioTheme.Brush(ThemeColor.Text)
+    };
     private static readonly IBrush PanelBrush = StudioTheme.Brush(ThemeColor.Panel), LineBrush = StudioTheme.Brush(ThemeColor.Border);
     private Control BuildLayout()
     {
@@ -104,7 +109,8 @@ public sealed partial class MainWindow
         _status.FontSize = 11; _status.TextWrapping = TextWrapping.NoWrap; _status.TextTrimming = TextTrimming.CharacterEllipsis; _status.MaxWidth = 450;
         status.Children.Add(_projectStatus); Grid.SetColumn(_status, 1); status.Children.Add(_status);
         Grid.SetColumn(_updateNotice, 2); status.Children.Add(_updateNotice);
-        Grid.SetRow(status, 3); root.Children.Add(status); return root;
+        var footer = new StackPanel(); footer.Children.Add(_compatibilityNotice); footer.Children.Add(status);
+        Grid.SetRow(footer, 3); root.Children.Add(footer); return root;
     }
     private static Control ToolSeparator() => new Border { Width = 1, Background = LineBrush, Margin = new Thickness(7, 7) };
     private Button IconButton(string name, string icon, Func<Task> action, Func<bool>? enabled = null)
@@ -150,6 +156,7 @@ public sealed partial class MainWindow
             ActionMenu("Audition take", AuditionTake, () => HasInputSelection() && _timeline.SelectedTake != null), new Separator(),
             ActionMenu("Load selected state", LoadSelectedMarker, () => _timeline.SelectedMarker is { Valid: true }),
             ActionMenu("Clear selected state", ClearSelectedMarker, () => _timeline.SelectedMarker != null),
+            new MenuItem { Header = "Experiment", Name = "StateExperimentMenu", IsVisible = false },
             new Separator(),
             ActionMenu("Rename tag…", () => EditTimelineTag(_timeline.SelectedTag, _timeline.SelectedTag!.Position), () => _timeline.SelectedTag != null),
             ActionMenu("Remove tag", () => _execution.RemoveTagAsync(_timeline.SelectedTag!.Id), () => _timeline.SelectedTag != null),
@@ -160,6 +167,7 @@ public sealed partial class MainWindow
             var editMenu = new ContextMenu { ItemsSource = EditMenu(context) };
             editMenu.Opened += (_, _) =>
             {
+                PopulateStateExperiments(editMenu.Items.OfType<MenuItem>().Single(item => item.Name == "StateExperimentMenu"));
                 var parent = editMenu.Items.OfType<MenuItem>().Single(item => item.Name == "ApplyTakeAtCursor");
                 parent.ItemsSource = _execution.Takes.Select(take =>
                 {
@@ -251,6 +259,7 @@ public sealed partial class MainWindow
     private Task ZoomTimeline(double multiplier) { _timeline.Zoom(multiplier); return Task.CompletedTask; }
     private void RefreshTimeline()
     {
+        _ = RefreshExperimentMarkerColors();
         _timelinePreview.Text = $"{(_execution.IsRecordingLive ? "REC · " : "")}{PlaybackPositionText}";
         _timelinePreview.Foreground = _execution.IsRecordingLive ? StudioTheme.Brush(ThemeColor.Error) : StudioTheme.Brush(ThemeColor.Text);
         var playing = _execution.IsRunning;

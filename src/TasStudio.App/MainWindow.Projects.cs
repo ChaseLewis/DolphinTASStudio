@@ -184,7 +184,7 @@ public sealed partial class MainWindow
                 var content = await ProjectVerification.VerifyAsync(p.Path, identity, _settings.ResolvedRoms, hashes, cancellation.Token);
                 var index = _settings.RecentProjects.FindIndex(r => r.Path == p.Path);
                 if (index >= 0) _settings.RecentProjects[index] = RecentProject.From(p.Path, content) with { OpenedUtc = p.OpenedUtc };
-                _verification[p.Path] = "Files, ROM & emulator build verified";
+                _verification[p.Path] = ProjectVerification.BuildWarning(content.Archive.Metadata, identity) ?? "Files, ROM & emulator build verified";
             }
             catch (OperationCanceledException) { _verification[p.Path] = "Check canceled"; RefreshProjectList(); break; }
             catch (Exception ex) { _verification[p.Path] = "Needs attention: " + ex.Message; }

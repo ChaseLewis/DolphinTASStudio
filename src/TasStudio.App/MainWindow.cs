@@ -125,6 +125,8 @@ public sealed partial class MainWindow : Window
 
     private void Refresh()
     {
+        _compatibilityNotice.Text = _execution.CompatibilityWarning;
+        _compatibilityNotice.IsVisible = !_homeVisible && _execution.CompatibilityWarning != null;
         var frame = Interlocked.Exchange(ref _pendingVideo, null);
         if (frame != null) ShowFrame(frame);
         _empty.IsVisible = !_execution.IsLoaded;

@@ -13,6 +13,11 @@ if (args.Length < 2) throw new ArgumentException("Usage: integration <rom> <outp
 var rom = Path.GetFullPath(args[0]);
 var output = Path.GetFullPath(args[1]);
 Directory.CreateDirectory(output);
+if (Array.IndexOf(args, "project-build-warning") is var warningIndex && warningIndex >= 0)
+{
+    await ProjectBuildWarning.Run(rom, output, args[warningIndex + 1]);
+    return;
+}
 if (args.Contains("realtime-playback"))
 {
     string? Option(string name) => Array.IndexOf(args, name) is var index && index >= 0 ? args[index + 1] : null;

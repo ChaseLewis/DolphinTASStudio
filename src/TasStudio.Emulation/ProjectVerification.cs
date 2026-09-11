@@ -16,8 +16,11 @@ public static class ProjectVerification
         hashes ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (!hashes.TryGetValue(rom, out var hash)) hashes[rom] = hash = await FolderProject.HashGameAsync(rom, cancellationToken);
         if (hash != metadata.GameHash) throw new InvalidDataException("ROM identity differs.");
-        if (backendIdentity != metadata.BackendIdentity) throw new InvalidDataException("Different emulator build required.");
         if (File.Exists(path + ".watches.json")) WatchDocument.Load(path + ".watches.json");
         return content;
     }
+    public static string? BuildWarning(ArchiveMetadata metadata, string backendIdentity) =>
+        metadata.BackendIdentity != backendIdentity || metadata.RuntimeHistory.Length > 1 ||
+        metadata.RuntimeHistory.Any(runtime => runtime.BackendIdentity != backendIdentity)
+            ? "Different emulator build or resources — opens with a compatibility warning" : null;
 }

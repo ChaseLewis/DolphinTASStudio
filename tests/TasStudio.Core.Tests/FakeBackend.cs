@@ -10,6 +10,7 @@ internal class FakeBackend : IEmulatorBackend
     private const int SnapshotBytes = sizeof(ulong) + sizeof(int);
     private int _accumulator;
     public string Identity { get; set; } = "fake-core/1";
+    public string? ConfigurationIdentity { get; set; }
     public bool IsLoaded { get; private set; }
     public ulong Position { get; private set; }
     public ulong FieldsPerStep { get; set; } = 1;

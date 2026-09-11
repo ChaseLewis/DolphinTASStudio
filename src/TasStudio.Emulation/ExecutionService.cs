@@ -91,6 +91,7 @@ public sealed partial class ExecutionService : IDisposable
         var initial = _backend.Capture() with { Position = 0 };
         _backend.Restore(initial);
         _initial = initial;
+        _baselineRuntime = CurrentRuntime;
         _projectStart = new(startKind);
         _inputs.Clear(); _events.Clear(); _hasProject = true;
         InitializeWorkspace();
@@ -129,7 +130,7 @@ public sealed partial class ExecutionService : IDisposable
     });
 
     public Task LoadProjectAsync(string path, BackendOptions options, string? relocatedRom = null, ulong? positionOverride = null,
-        EmulationConfiguration? powerOnConfiguration = null) => Enqueue(() =>
+        EmulationConfiguration? powerOnConfiguration = null, bool requireExactRuntime = false) => Enqueue(() =>
     {
         Pause();
         // Validate the container and content identity before replacing the live session.
@@ -143,7 +144,9 @@ public sealed partial class ExecutionService : IDisposable
         if (powerOnConfiguration is { } boot)
             projectOptions = projectOptions with { Configuration = boot.ValidatedCopy(), InternalResolution = boot.Resolution, DspHle = boot.DspHle };
         var coreIdentity = _backend.InspectIdentity(options);
-        if (coreIdentity != metadata.BackendIdentity) throw new InvalidDataException("Project requires a different emulator build.");
+        if (requireExactRuntime && (coreIdentity != metadata.BackendIdentity ||
+            metadata.RuntimeHistory.Any(runtime => runtime.BackendIdentity != coreIdentity)))
+            throw new InvalidDataException("Project requires a different emulator build.");
         // Reopening always gets a new writable profile; raw memory-card contents come from the state.
         projectOptions = projectOptions with { SaveDirectory = Path.Combine(options.SaveDirectory, "Projects", Guid.NewGuid().ToString("N")), StorageRoot = options.StorageRoot ?? options.SaveDirectory };
         var rollback = CaptureSession();
@@ -152,6 +155,8 @@ public sealed partial class ExecutionService : IDisposable
         try
         {
             LoadGame(gamePath, projectOptions);
+            _allowRuntimeMismatch = !requireExactRuntime;
+            if (!requireExactRuntime) RememberRuntime(metadata);
             if (powerOnConfiguration != null)
             {
                 // A power-on experiment never restores a state made under another UTC/configuration.
@@ -168,6 +173,9 @@ public sealed partial class ExecutionService : IDisposable
             {
             ValidateCompatibility(metadata);
             _backend.Restore(archive.InitialState);
+            // The baseline bytes still belong to their original runtime. Keep
+            // that identity in saves and history roots so polls/states survive.
+            _baselineRuntime = new(metadata.BackendIdentity, metadata.ConfigurationIdentity);
             _initial = archive.InitialState; _inputs.AddRange(metadata.Inputs); _events.AddRange(metadata.Events); _hasProject = true;
             _projectStart = metadata.Start;
             InitializeWorkspace();
@@ -190,7 +198,7 @@ public sealed partial class ExecutionService : IDisposable
             throw;
         }
         finally { FinishSessionReplacement(rollback, succeeded); }
-        Notify("Opened project: " + Path.GetFileName(path));
+        Notify("Opened project: " + Path.GetFileName(path) + (CompatibilityWarning is { } warning ? " — " + warning : ""));
     });
 
     public Task SeekAsync(ulong target, CancellationToken cancellationToken = default)
@@ -307,29 +315,37 @@ public sealed partial class ExecutionService : IDisposable
     }
 
     private ArchiveMetadata Metadata(string kind, EmulatorSnapshot initial) => new(
-        ProjectArchive.FormatVersion, kind, _backend.Identity, GamePath!, _gameHash,
+        ProjectArchive.FormatVersion, kind, kind == ProjectArchive.ProjectKind ? BaselineRuntime.BackendIdentity : _backend.Identity, GamePath!, _gameHash,
         _options!.InternalResolution, _options.DspHle, _backend.Position, initial.Position,
         Convert.ToHexString(SHA256.HashData(initial.Data)), initial.Preview?.Width ?? 0, initial.Preview?.Height ?? 0,
         kind == ProjectArchive.ProjectKind ? _inputs.ToArray() : [], kind == ProjectArchive.ProjectKind ? _events.ToArray() : [])
         { HistoryHash = _hasProject && kind == ProjectArchive.StateKind ? _history!.At(initial.Position) : null,
-          Configuration = _options!.Configuration?.ValidatedCopy(), ConfigurationIdentity = _backend.ConfigurationIdentity, Checkpoints = _checkpointPolicy, Start = _projectStart,
+          Configuration = _options!.Configuration?.ValidatedCopy(), ConfigurationIdentity = kind == ProjectArchive.ProjectKind ? BaselineRuntime.ConfigurationIdentity : _backend.ConfigurationIdentity,
+          RuntimeHistory = _runtimeHistory.ToArray(), Checkpoints = _checkpointPolicy, Start = _projectStart,
           Tags = kind == ProjectArchive.ProjectKind ? _tags.ToArray() : [],
           PollFrames = kind == ProjectArchive.ProjectKind ? PollRecords() : [] };
 
     private void ValidateCompatibility(ArchiveMetadata metadata)
     {
-        if (metadata.Configuration?.Fingerprint != _options!.Configuration?.Fingerprint || metadata.ConfigurationIdentity != _backend.ConfigurationIdentity)
+        if (metadata.Configuration?.Fingerprint != _options!.Configuration?.Fingerprint)
             throw new InvalidDataException("State requires different project settings or compatibility resources. Restart with the desired settings to create a new baseline.");
-        if (metadata.BackendIdentity != _backend.Identity) throw new InvalidDataException("State requires a different Dolphin build.");
         if (metadata.GameHash != _gameHash) throw new InvalidDataException("State belongs to a different game image.");
         if (metadata.InternalResolution != _options!.InternalResolution || metadata.DspHle != _options.DspHle)
             throw new InvalidDataException("State requires different graphics/DSP settings.");
+        if (!_allowRuntimeMismatch)
+        {
+            if (metadata.BackendIdentity != _backend.Identity || metadata.RuntimeHistory.Any(runtime => runtime.BackendIdentity != _backend.Identity))
+                throw new InvalidDataException("State requires a different Dolphin build.");
+            if (metadata.ConfigurationIdentity != _backend.ConfigurationIdentity || metadata.RuntimeHistory.Any(runtime => runtime.ConfigurationIdentity != _backend.ConfigurationIdentity))
+                throw new InvalidDataException("State requires different compatibility resources.");
+        }
+        else RememberRuntime(metadata);
     }
 
     private static string HashFile(string path) { using var file = File.OpenRead(path); return Convert.ToHexString(SHA256.HashData(file)); }
     private void RequireLoaded() { if (!_loaded) throw new InvalidOperationException("Open a game first."); }
     private void RequireProject() { RequireLoaded(); if (!_hasProject) throw new InvalidOperationException("Create or open a TAS project first."); }
-    private void ClearProject() { _initial = null; _projectStart = null; _inputs.Clear(); _events.Clear(); _hasProject = false; ClearWorkspace(); }
+    private void ClearProject() { _initial = null; _projectStart = null; _inputs.Clear(); _events.Clear(); _hasProject = false; ClearCompatibility(); ClearWorkspace(); }
     private void InterruptSeek() => Interlocked.Increment(ref _seekInterruptVersion);
     private void Pause()
     {

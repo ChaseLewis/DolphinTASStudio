@@ -27,6 +27,7 @@ public sealed class TimelineView : Control
     public IReadOnlyList<InputTake> Takes { get; set; } = [];
     public IReadOnlyList<TimelineSection> Sections { get; set; } = [];
     public IReadOnlyList<StateMarker> Markers { get; set; } = [];
+    public IReadOnlySet<string> ExperimentStateIds { get; set; } = new HashSet<string>();
     public IReadOnlyList<TimelineTag> Tags { get; set; } = [];
     public IReadOnlyList<ulong> PollBoundaries { get; set; } = [];
     private bool HasPollScale => PollBoundaries.Count == InputCount + 1 && PollBoundaries[^1] > 0;
@@ -174,7 +175,10 @@ public sealed class TimelineView : Control
             context.FillRectangle(SelectedBrush, new Rect(X(SelectedFrame), RulerHeight + selectedRow * LaneHeight, Math.Max(3, X(SelectionEnd) - X(SelectedFrame)), LaneHeight));
             foreach (var marker in Markers)
             {
-                var x = X(marker.Position); var brush = marker.Valid ? marker.Automatic ? StudioTheme.Brush(ThemeColor.TimelineAutomatic) : SelectionBrush : InvalidBrush;
+                var x = X(marker.Position);
+                var brush = !marker.Valid ? InvalidBrush : ExperimentStateIds.Contains(marker.Id)
+                    ? StudioTheme.Brush(ThemeColor.TimelineExperiment)
+                    : marker.Automatic ? StudioTheme.Brush(ThemeColor.TimelineAutomatic) : SelectionBrush;
                 if (marker.Automatic) context.DrawEllipse(null, new Pen(brush, 2), new(x, 18), 4, 4);
                 else context.DrawRectangle(brush, null, new Rect(x - 4, 10, 8, 15), 1, 1);
                 if (!marker.Valid) context.DrawLine(new Pen(BackgroundBrush, 2), new(x - 5, 12), new(x + 5, 24));
@@ -222,7 +226,9 @@ public sealed class TimelineView : Control
             if (point.X >= LabelWidth && (point.Y < RulerHeight || row == 0)) ContextFrame = frame;
             return;
         }
-        if (point.Y >= RulerHeight) SelectedTake = row > 0 && row <= Takes.Count ? Takes[row - 1].Id : null;
+        // Ruler and saved-state clicks select active playback, just like tags.
+        // Retaining a previous take here makes the next arrow snap to its bounds.
+        SelectedTake = point.Y >= RulerHeight && row > 0 && row <= Takes.Count ? Takes[row - 1].Id : null;
         if (point.X < LabelWidth && SelectedTake != null) { var take = Takes.Single(t => t.Id == SelectedTake); SetSelection(take.Start, take.Start + take.Inputs.Length, SelectedTake); }
         else { _dragAnchor = frame; SetSelection(frame, frame + 1, SelectedTake); if (!rightClick) e.Pointer.Capture(this); }
         SelectionChanged?.Invoke(); e.Handled = !rightClick;

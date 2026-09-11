@@ -39,10 +39,12 @@ found six packets over the old 250 ms limit, including a 899 ms loading transiti
 and a 1235 ms startup packet; that earlier buffer correction remains useful for
 packet output.
 
-This patch changes the core binary identity. Existing projects/states and batches
-must retain their original runtime; compatibility checks are not bypassed.
-Validation of a newer build imports inputs/polls into a separate fresh power-on
-baseline. Speaker timing is not an experiment parameter.
+This patch changes the core binary identity. Interactive TAS opening now warns
+about changed builds/resources and attempts the original saved state; unreadable
+states and recorded-poll desyncs still fail. Original baseline identity and build
+history survive saving and recovery. Experiment workers retain strict runtime
+checks. Validation of a newer build can import inputs/polls into a separate fresh
+power-on baseline. Speaker timing is not an experiment parameter.
 
 Tests cover independent device reads, retired providers, execution mode lifecycle
 and failure cleanup. The `realtime-playback` native integration test compares
