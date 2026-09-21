@@ -164,7 +164,7 @@ native runtime and system resources.
 | `AssemblyName` | Output DLL's simple name, without `.dll` |
 | `TypeName` | Full public class name, including namespace when present |
 | `Count` | Positive `int`; indices are `0..Count-1`. No artificial 10,000-trial cap |
-| `Parallelism` | 1–4 worker processes; default 2 |
+| `Parallelism` | 1–8 worker processes; default 2 |
 | `Headless` | Default true. False opens silent, read-only preview windows for active workers |
 | `TimeoutSeconds` | 1–86400, default 300; wall-clock limit for each worker process |
 | `Start` | `Boot` or `SaveState`; default `Boot` |
@@ -558,9 +558,24 @@ batches written directly to `.runs/<run>/results.sqlite`; existing captures need
 rerun or folder move. This picker is in Studio, not the VS Code extension.
 Select one and choose **Apply to Active playback**. This replaces that play's original
 input range and its execution events, preserves inputs outside the range, and is one
-undoable edit. Seek afterward to preview it. The starting project/history must match;
-plays created with a different power-on UTC or baseline cannot simply be pasted into
-an incompatible active project.
+undoable edit. Seek afterward to preview it. A different starting history opens a
+warning with **Cancel** and **Apply anyway**. Cancel (also the default and window-close
+behavior) leaves inputs unchanged. Apply anyway explicitly permits the baseline
+mismatch, preserves earlier inputs/settings, and replaces or appends the play's
+range. Results may differ; saved poll timings from the incompatible baseline are
+discarded and rebuilt during playback. Structural validation still applies: a play
+cannot start beyond the current input count, and malformed data is rejected.
+The execution API remains strict by default; callers can explicitly opt in with
+`ApplyExperimentPlayAsync(play, allowHistoryMismatch: true)`.
+
+Choose **Apply as take** to add the result as a separate candidate lane without
+changing Active playback. The take keeps the experiment's inputs, execution events,
+and recorded polls, including when saved or recovered. It may extend beyond the
+active movie. Select it to **Audition take**, **Use selected section**, or **Apply
+take at cursor**; relocating an experiment take also relocates its events and
+regenerates poll timing. Undo removes the added take. The same history-mismatch
+check applies when adding a take; **Apply anyway** associates it with the current
+starting history and discards incompatible poll timing.
 
 ## Cancellation, retention, and resume
 

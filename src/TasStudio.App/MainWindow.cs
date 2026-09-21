@@ -39,6 +39,7 @@ public sealed partial class MainWindow : Window
     private readonly NumericUpDown[] _axes = Enumerable.Range(0, 6).Select(_ => new NumericUpDown { Minimum = byte.MinValue, Maximum = byte.MaxValue, Width = 110, FormatString = "0" }).ToArray();
     private readonly List<(Control Control, Func<bool> Enabled)> _availability = [];
     private VideoFrame? _pendingVideo;
+    private bool _presentingVideo;
     private WriteableBitmap? _bitmap;
     private string? _projectPath;
     private bool _busy, _dirty, _closingApproved, _seeking;
@@ -70,10 +71,11 @@ public sealed partial class MainWindow : Window
         _timer.Tick += (_, _) => Refresh();
         AttachInputEvents(this);
         Closing += OnClosing;
-        Closed += (_, _) => { _timer.Stop(); CloseDockWorkspace(); _input.Dispose(); _execution.Dispose(); _audio.Dispose(); _bitmap?.Dispose(); };
+        Closed += (_, _) => { _presentingVideo = false; _timer.Stop(); CloseDockWorkspace(); _input.Dispose(); _execution.Dispose(); _audio.Dispose(); _bitmap?.Dispose(); _bitmap = null; };
         Closed += (_, _) => { foreach (var banner in _banners.Values) banner.Dispose(); };
         Opened += async (_, _) =>
         {
+            if (!_presentingVideo) { _presentingVideo = true; RequestAnimationFrame(PresentVideo); }
             _timer.Start();
             if (_homeVisible) SetProjectHome(true);
             await LoadProjectBanners();
@@ -127,8 +129,6 @@ public sealed partial class MainWindow : Window
     {
         _compatibilityNotice.Text = _execution.CompatibilityWarning;
         _compatibilityNotice.IsVisible = !_homeVisible && _execution.CompatibilityWarning != null;
-        var frame = Interlocked.Exchange(ref _pendingVideo, null);
-        if (frame != null) ShowFrame(frame);
         _empty.IsVisible = !_execution.IsLoaded;
         _viewport.IsVisible = _execution.IsLoaded;
         _position.Text = $"{(_execution.IsRunning ? "RUNNING" : _execution.IsLoaded ? "PAUSED" : "STOPPED")}   •   {PlaybackPositionText}";
@@ -144,6 +144,16 @@ public sealed partial class MainWindow : Window
         RefreshRecoveryStatus();
         RefreshWatcherStatus();
         _position.Text += _execution.IsPreviewCurrent ? "" : "  • Preview predates edit — seek to update";
+    }
+
+    private void PresentVideo(TimeSpan timestamp)
+    {
+        if (!_presentingVideo) return;
+        // Video follows the render clock; inspector/status work remains on its 33 ms timer.
+        // Keep only the newest frame if the UI falls behind, without queuing stale pictures.
+        var frame = Interlocked.Exchange(ref _pendingVideo, null);
+        if (frame != null) ShowFrame(frame);
+        RequestAnimationFrame(PresentVideo);
     }
 
     private unsafe void ShowFrame(VideoFrame frame)
@@ -177,6 +187,8 @@ public sealed partial class MainWindow : Window
     private async void HandleKeyDown(object? sender, KeyEventArgs e)
     {
         if (_homeVisible || _dialogOpen || e.Handled) return;
+        if (e.Key == Key.Escape && _timeline.CancelSelectionDrag())
+        { e.Handled = true; return; }
         if (e.Key == Key.Escape && _advanceHeld)
         {
             e.Handled = true; StopHeldAdvance();

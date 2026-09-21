@@ -29,8 +29,22 @@ public sealed class TimelineView : Control
     public IReadOnlyList<StateMarker> Markers { get; set; } = [];
     public IReadOnlySet<string> ExperimentStateIds { get; set; } = new HashSet<string>();
     public IReadOnlyList<TimelineTag> Tags { get; set; } = [];
-    public IReadOnlyList<ulong> PollBoundaries { get; set; } = [];
-    private bool HasPollScale => PollBoundaries.Count == InputCount + 1 && PollBoundaries[^1] > 0;
+    private IReadOnlyList<ulong> _pollBoundaries = [];
+    private bool _completePollScale;
+    public IReadOnlyList<ulong> PollBoundaries
+    {
+        get => _pollBoundaries;
+        set
+        {
+            _pollBoundaries = value;
+            // Newly authored groups have no polls yet. Use group spacing until
+            // replay records them, so they remain visible and selectable.
+            _completePollScale = value.Count > 1;
+            for (var i = 1; i < value.Count && _completePollScale; i++)
+                _completePollScale = value[i] > value[i - 1];
+        }
+    }
+    private bool HasPollScale => _completePollScale && PollBoundaries.Count == InputCount + 1;
     public TimelineTag? SelectedTag { get; private set; }
     public event Action<ulong>? TagRequested;
     public int SelectedFrame { get; private set; }
@@ -38,15 +52,27 @@ public sealed class TimelineView : Control
     public string? SelectedTake { get; private set; }
     public StateMarker? SelectedMarker { get; private set; }
     public int? ContextFrame { get; private set; }
+    public string? ContextTake { get; private set; }
     public event Action? SelectionChanged;
+    public event Action<int>? MoveSelectionRequested;
     public event Action? ViewportChanged;
     private int MaximumCursorFrame => Math.Max(InputCount, Tags.Count == 0 ? 0 : (int)Math.Min(Tags.Max(t => t.Position), int.MaxValue - 1UL));
-    public int MaximumFirstFrame => Math.Max(0, Math.Max(MaximumCursorFrame, (int)Math.Min(Position, int.MaxValue)) - VisibleFrames + Math.Max(1, VisibleFrames / 5));
+    private int MaximumTakeEnd => Takes.Count == 0 ? 0 : Takes.Max(t => t.Start + t.Inputs.Length);
+    public int MaximumFirstFrame => Math.Max(0, Math.Max(Math.Max(MaximumCursorFrame, MaximumTakeEnd), (int)Math.Min(Position, int.MaxValue)) - VisibleFrames + Math.Max(1, VisibleFrames / 5));
     private int? _dragAnchor;
+    private int? _moveAnchor;
+    private double _moveStartX;
+    private int _moveDelta;
+    private bool _moveStarted;
+    private IPointer? _selectionPointer;
     public TimelineView() { ClipToBounds = true; Focusable = true; Height = 120; }
     public void SetSelection(int start, int end, string? take = null)
     {
-        SelectedFrame = Math.Clamp(start, 0, MaximumCursorFrame); SelectionEnd = Math.Clamp(end, SelectedFrame + 1, Math.Max(InputCount, SelectedFrame + 1));
+        CancelSelectionDrag();
+        var candidate = Takes.FirstOrDefault(t => t.Id == take);
+        var candidateEnd = candidate == null ? InputCount : candidate.Start + candidate.Inputs.Length;
+        SelectedFrame = Math.Clamp(start, 0, candidate == null ? MaximumCursorFrame : candidateEnd - 1);
+        SelectionEnd = Math.Clamp(end, SelectedFrame + 1, Math.Max(candidateEnd, SelectedFrame + 1));
         SelectedTake = take; InvalidateVisual();
     }
     public void Update()
@@ -65,8 +91,8 @@ public sealed class TimelineView : Control
     public void MoveCursor(int direction)
     {
         var take = Takes.FirstOrDefault(t => t.Id == SelectedTake);
-        var first = Math.Min(InputCount, take?.Start ?? 0);
-        var last = take == null ? MaximumCursorFrame : Math.Min(InputCount, take.Start + take.Inputs.Length - 1);
+        var first = take?.Start ?? 0;
+        var last = take == null ? MaximumCursorFrame : take.Start + take.Inputs.Length - 1;
         var frame = Math.Clamp(SelectedFrame + Math.Sign(direction), first, Math.Max(first, last));
         SetSelection(frame, frame + 1, SelectedTake);
         SelectedMarker = null; SelectedTag = null; ContextFrame = null;
@@ -74,6 +100,16 @@ public sealed class TimelineView : Control
         SelectionChanged?.Invoke();
     }
     public void RevealPosition() => RevealFrame((int)Math.Min(Position, int.MaxValue));
+    public void RevealSelection() => RevealFrame(SelectedFrame);
+    public bool CancelSelectionDrag()
+    {
+        var moving = _moveAnchor != null;
+        _moveAnchor = null; _moveDelta = 0; _moveStarted = false;
+        var pointer = _selectionPointer; _selectionPointer = null;
+        pointer?.Capture(null);
+        if (moving) InvalidateVisual();
+        return moving;
+    }
     private void RevealFrame(int frame)
     {
         var margin = Math.Max(1, VisibleFrames / 10);
@@ -101,10 +137,12 @@ public sealed class TimelineView : Control
     }
     private double X(double frame) => LabelWidth + (Boundary(frame) - Boundary(FirstFrame)) *
         Math.Max(1, Bounds.Width - LabelWidth) / Math.Max(1, Boundary(FirstFrame + VisibleFrames) - Boundary(FirstFrame));
-    private int Frame(double x)
+    private int Frame(double x, bool allowBeyondEnd = false)
     {
-        if (!HasPollScale) return Math.Clamp(FirstFrame + (int)Math.Floor((x - LabelWidth) * VisibleFrames / Math.Max(1, Bounds.Width - LabelWidth)), 0, InputCount);
+        if (!HasPollScale) return (int)Math.Clamp(FirstFrame + Math.Floor((x - LabelWidth) * VisibleFrames / Math.Max(1, Bounds.Width - LabelWidth)), 0, allowBeyondEnd ? int.MaxValue - 1 : InputCount);
         var poll = Boundary(FirstFrame) + (x - LabelWidth) * (Boundary(FirstFrame + VisibleFrames) - Boundary(FirstFrame)) / Math.Max(1, Bounds.Width - LabelWidth);
+        if (allowBeyondEnd && poll > PollBoundaries[^1])
+            return (int)Math.Min(int.MaxValue - 1, InputCount + Math.Floor((poll - PollBoundaries[^1]) / Math.Max(1, (double)PollBoundaries[^1] / InputCount)));
         var low = 0; var high = InputCount;
         while (low < high) { var mid = low + (high - low + 1) / 2; if (PollBoundaries[mid] <= poll) low = mid; else high = mid - 1; }
         return low;
@@ -173,6 +211,12 @@ public sealed class TimelineView : Control
             }
             var selectedRow = SelectedTake == null ? 0 : Math.Max(0, Takes.ToList().FindIndex(t => t.Id == SelectedTake) + 1);
             context.FillRectangle(SelectedBrush, new Rect(X(SelectedFrame), RulerHeight + selectedRow * LaneHeight, Math.Max(3, X(SelectionEnd) - X(SelectedFrame)), LaneHeight));
+            if (_moveStarted)
+            {
+                var left = X(SelectedFrame + _moveDelta); var right = X(SelectionEnd + _moveDelta);
+                context.DrawRectangle(SelectedBrush, new Pen(SelectionBrush, 2),
+                    new Rect(left, RulerHeight + selectedRow * LaneHeight, Math.Max(3, right - left), LaneHeight));
+            }
             foreach (var marker in Markers)
             {
                 var x = X(marker.Position);
@@ -200,7 +244,7 @@ public sealed class TimelineView : Control
         if (properties.IsMiddleButtonPressed && point.X >= LabelWidth)
         { TagRequested?.Invoke((ulong)Frame(point.X)); e.Handled = true; return; }
         if (!properties.IsLeftButtonPressed && !properties.IsRightButtonPressed) return;
-        if (properties.IsRightButtonPressed) ContextFrame = null;
+        if (properties.IsRightButtonPressed) { ContextFrame = null; ContextTake = null; }
         SelectedTag = TagAt(point);
         if (SelectedTag != null)
         {
@@ -219,27 +263,66 @@ public sealed class TimelineView : Control
         var rightClick = properties.IsRightButtonPressed;
         Focus(); var row = (int)((point.Y - RulerHeight) / LaneHeight);
         SelectedMarker = point.Y < 30 ? Markers.Where(m => Math.Abs(X(m.Position) - point.X) < 9).OrderBy(m => Math.Abs(X(m.Position) - point.X)).ThenByDescending(m => m.Valid).FirstOrDefault() : null;
-        var frame = SelectedMarker == null ? Frame(point.X) : (int)SelectedMarker.Position;
+        var frame = SelectedMarker == null ? Frame(point.X, allowBeyondEnd: point.Y >= RulerHeight && row > 0 && row <= Takes.Count) : (int)SelectedMarker.Position;
         if (rightClick)
         {
             _dragAnchor = null;
+            if (point.Y >= RulerHeight && row > 0 && row <= Takes.Count) ContextTake = Takes[row - 1].Id;
             if (point.X >= LabelWidth && (point.Y < RulerHeight || row == 0)) ContextFrame = frame;
             return;
         }
         // Ruler and saved-state clicks select active playback, just like tags.
         // Retaining a previous take here makes the next arrow snap to its bounds.
-        SelectedTake = point.Y >= RulerHeight && row > 0 && row <= Takes.Count ? Takes[row - 1].Id : null;
+        var clickedTake = point.Y >= RulerHeight && row > 0 && row <= Takes.Count ? Takes[row - 1].Id : null;
+        var takeBounds = Takes.FirstOrDefault(t => t.Id == SelectedTake);
+        var selectionInsideLane = SelectedFrame >= (takeBounds?.Start ?? 0) &&
+            SelectionEnd <= (takeBounds == null ? InputCount : takeBounds.Start + takeBounds.Inputs.Length);
+        if (point.X >= LabelWidth && point.Y >= RulerHeight && row <= Takes.Count &&
+            clickedTake == SelectedTake && selectionInsideLane && frame >= SelectedFrame && frame < SelectionEnd &&
+            (SelectionEnd - SelectedFrame > 1 || e.KeyModifiers.HasFlag(KeyModifiers.Shift)))
+        {
+            _dragAnchor = null; _moveAnchor = frame; _moveStartX = point.X; _moveDelta = 0; _moveStarted = false;
+            _selectionPointer = e.Pointer; e.Pointer.Capture(this); e.Handled = true; return;
+        }
+        SelectedTake = clickedTake;
         if (point.X < LabelWidth && SelectedTake != null) { var take = Takes.Single(t => t.Id == SelectedTake); SetSelection(take.Start, take.Start + take.Inputs.Length, SelectedTake); }
         else { _dragAnchor = frame; SetSelection(frame, frame + 1, SelectedTake); if (!rightClick) e.Pointer.Capture(this); }
         SelectionChanged?.Invoke(); e.Handled = !rightClick;
     }
     protected override void OnPointerMoved(PointerEventArgs e)
     {
-        base.OnPointerMoved(e); if (_dragAnchor is not { } anchor) return;
-        var frame = Frame(e.GetPosition(this).X); SetSelection(Math.Min(anchor, frame), Math.Max(anchor, frame) + 1, SelectedTake); SelectionChanged?.Invoke();
+        base.OnPointerMoved(e);
+        if (_moveAnchor is { } moveAnchor)
+        {
+            var point = e.GetPosition(this);
+            if (!_moveStarted && Math.Abs(point.X - _moveStartX) < 4) return;
+            _moveStarted = true;
+            var take = Takes.FirstOrDefault(t => t.Id == SelectedTake);
+            var first = take?.Start ?? 0;
+            var end = take == null ? int.MaxValue : first + take.Inputs.Length;
+            _moveDelta = Math.Clamp(Frame(point.X, allowBeyondEnd: true) - moveAnchor, first - SelectedFrame, end - SelectionEnd);
+            InvalidateVisual(); e.Handled = true; return;
+        }
+        if (_dragAnchor is not { } anchor) return;
+        var frame = Frame(e.GetPosition(this).X, allowBeyondEnd: SelectedTake != null); SetSelection(Math.Min(anchor, frame), Math.Max(anchor, frame) + 1, SelectedTake); SelectionChanged?.Invoke();
     }
-    protected override void OnPointerReleased(PointerReleasedEventArgs e) { _dragAnchor = null; e.Pointer.Capture(null); base.OnPointerReleased(e); }
-    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e) { _dragAnchor = null; base.OnPointerCaptureLost(e); }
+    protected override void OnPointerReleased(PointerReleasedEventArgs e)
+    {
+        var anchor = _moveAnchor; var delta = _moveDelta; var moved = _moveStarted;
+        CancelSelectionDrag(); _dragAnchor = null; e.Pointer.Capture(null);
+        if (anchor != null)
+        {
+            if (moved) { if (delta != 0) MoveSelectionRequested?.Invoke(delta); }
+            else { SetSelection(anchor.Value, anchor.Value + 1, SelectedTake); SelectionChanged?.Invoke(); }
+            e.Handled = true;
+        }
+        base.OnPointerReleased(e);
+    }
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+    {
+        _dragAnchor = null; _selectionPointer = null; CancelSelectionDrag();
+        base.OnPointerCaptureLost(e);
+    }
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
         if (e.KeyModifiers.HasFlag(KeyModifiers.Control)) Zoom(e.Delta.Y > 0 ? .8 : 1.25);

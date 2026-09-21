@@ -46,8 +46,11 @@ public sealed partial class ExecutionService : IDisposable
     public event Action<string>? StatusChanged;
     public event Action? Changed;
 
-    public ExecutionService(IEmulatorBackend backend)
+    public ExecutionService(IEmulatorBackend backend) : this(backend, ProjectArchive.Save) { }
+
+    internal ExecutionService(IEmulatorBackend backend, Action<string, ArchiveMetadata, EmulatorSnapshot> writeCheckpoint)
     {
+        _writeCheckpoint = writeCheckpoint;
         _backend = backend;
         _backend.VideoReady += frame => { _latestFrame = frame; if (!_suppressMedia) VideoReady?.Invoke(frame); };
         _backend.AudioReady += (samples, rate) => { if (!_suppressMedia) AudioReady?.Invoke(samples, rate); };
@@ -181,6 +184,7 @@ public sealed partial class ExecutionService : IDisposable
             InitializeWorkspace();
             RestorePollRecords(metadata.PollFrames);
             _checkpointPolicy = metadata.Checkpoints ?? new();
+            Interlocked.Exchange(ref _timelineOffsetMilliseconds, metadata.TimelineOffsetMilliseconds);
             _takes.AddRange(content.Takes); _sections.AddRange(content.Sections); _savedStates.AddRange(content.States);
             _tags.AddRange(metadata.Tags);
             _checkpoints.AddRange(content.AutomaticCheckpoints.Select(c => new AutomaticCheckpoint(c.State, c.Seconds, c.Created, c.LastUse, new FileInfo(c.State.Path).Length, false)));
@@ -322,6 +326,7 @@ public sealed partial class ExecutionService : IDisposable
         { HistoryHash = _hasProject && kind == ProjectArchive.StateKind ? _history!.At(initial.Position) : null,
           Configuration = _options!.Configuration?.ValidatedCopy(), ConfigurationIdentity = kind == ProjectArchive.ProjectKind ? BaselineRuntime.ConfigurationIdentity : _backend.ConfigurationIdentity,
           RuntimeHistory = _runtimeHistory.ToArray(), Checkpoints = _checkpointPolicy, Start = _projectStart,
+          TimelineOffsetMilliseconds = _timelineOffsetMilliseconds,
           Tags = kind == ProjectArchive.ProjectKind ? _tags.ToArray() : [],
           PollFrames = kind == ProjectArchive.ProjectKind ? PollRecords() : [] };
 
@@ -349,6 +354,7 @@ public sealed partial class ExecutionService : IDisposable
     private void InterruptSeek() => Interlocked.Increment(ref _seekInterruptVersion);
     private void Pause()
     {
+        var recording = IsRecordingLive;
         _running = false;
         if (_realtimePlayback)
         {
@@ -357,6 +363,11 @@ public sealed partial class ExecutionService : IDisposable
             AudioSourceChanged?.Invoke(null);
         }
         AudioReady?.Invoke([], 0);
+        FinishCheckpointWrite(wait: true);
+        // A due checkpoint is taken once recording has stopped, avoiding native
+        // snapshot pauses during controller play. Teardown never creates new states.
+        if (recording && Volatile.Read(ref _disposed) == 0 && _loaded && _hasProject &&
+            !_checkpointPolicy.CaptureWhileRecording && Current()) MaybeCheckpoint();
     }
     private void Notify(string message) { Publish(); StatusChanged?.Invoke(message); }
     private void Publish()

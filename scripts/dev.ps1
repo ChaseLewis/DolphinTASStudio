@@ -20,6 +20,14 @@ try {
         Write-Output 'Close that app and run just dev again to pick up code changes; just dev-unique starts an isolated experiment.'
         return
     }
+    # Experiments can use this runtime independently of the app (for example from VS Code).
+    # Keep their binaries intact until every worker using this output directory has exited.
+    $workerExecutable = Join-Path $runDirectory 'TasStudio.Worker.exe'
+    $workers = @(Get-Process -Name TasStudio.Worker -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $workerExecutable })
+    if ($workers.Count -gt 0) {
+        $workerIds = ($workers | Sort-Object Id | ForEach-Object { $_.Id }) -join ', '
+        throw "Cannot rebuild this dev workspace while experiment workers are using it (PIDs: $workerIds). Wait for those experiments to finish or cancel them, then rerun just dev. To build and run alongside them, use just dev-unique. Runtime: $runDirectory"
+    }
     $nativeDependencies = @(
         'native/build-host/Release/TasStudio.LibretroHost.dll',
         'native/build-dolphin/Binaries/dolphin_libretro.dll',

@@ -108,6 +108,8 @@ public static class RecoveryAssetCleanup
             throw new InvalidDataException("Ambiguous timeline references.");
         foreach (var input in movie.Inputs.Concat(movie.Takes.SelectMany(t => t.Inputs))) Add(input, "inputs");
         foreach (var polls in movie.PollFrames) Add(polls, "inputs");
+        foreach (var take in movie.Takes)
+            if (take.Experiment != null) Add(take.Experiment, "inputs");
         return assets;
     }
 

@@ -19,7 +19,7 @@ public sealed partial class MainWindow
     private Control _manualInputControls = null!;
     private bool EditingAtPreview => _timeline.SelectedTake == null && (ulong)_timeline.SelectedFrame == _execution.Position && _timeline.SelectionEnd == _timeline.SelectedFrame + 1;
     private bool AuthoringNewInput => EditingAtPreview && _execution.Position >= (ulong)_execution.Inputs.Count;
-    private bool UsesControllerInput => _useController.IsChecked == true && AuthoringNewInput;
+    private bool UsesControllerInput => _useController.IsChecked == true && _timeline.SelectedTake == null;
     private readonly TurboInput _turboInput = new();
     private Task _pendingInputEdits = Task.CompletedTask;
     private Exception? _inputEditFailure;
@@ -33,7 +33,7 @@ public sealed partial class MainWindow
         var heading = new Grid { ColumnDefinitions = new("*,Auto"), ColumnSpacing = 8 };
         _inputPreviewLabel.VerticalAlignment = VerticalAlignment.Center;
         heading.Children.Add(_inputPreviewLabel); Grid.SetColumn(_useController, 1); heading.Children.Add(_useController);
-        _availability.Add((_useController, () => _execution.IsLoaded && _timeline.SelectedTake == null));
+        _availability.Add((_useController, () => _execution.IsLoaded && _timeline.SelectedTake == null && !_execution.IsRecordingLive));
         _useController.IsCheckedChanged += (_, _) =>
         {
             if (_useController.IsChecked != true && AuthoringNewInput) _pendingTasInput = ShownInput(_pendingTasInput);
@@ -158,7 +158,7 @@ public sealed partial class MainWindow
         editor.Children.Add(buttons);
         var next = ActionButton("Next Frame", Step, () => _execution.IsLoaded && _execution.IsPreviewCurrent);
         next.Name = "NextFrame"; next.Height = 38; next.Margin = new Thickness(0, 2, 0, 0);
-        ToolTip.SetTip(next, "Recorded inputs always play unchanged. F11: frame advance & keep input. F10: frame advance & clear (neutral new input), moving the cursor to the preview. F12: play one recorded frame with the cursor parked; stop at the end. Shift+F11 advances while held.");
+        ToolTip.SetTip(next, "Recorded inputs always play unchanged. F11: frame advance & keep input. F10: frame advance & clear (neutral new input unless Use controller is enabled), moving the cursor to the preview. F12: play one recorded frame with the cursor parked; stop at the end. Shift+F11 advances while held.");
         next.HorizontalAlignment = HorizontalAlignment.Stretch; next.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         next.Background = StudioTheme.Brush(ThemeColor.Primary); next.Foreground = StudioTheme.Brush(ThemeColor.PrimaryText);
         var nextContent = new Grid { ColumnDefinitions = new("Auto,*,Auto"), ColumnSpacing = 10 };
@@ -262,11 +262,11 @@ public sealed partial class MainWindow
         _inspectorReloadPending = false;
         var start = _timeline.SelectedFrame; var end = _timeline.SelectionEnd;
         var take = _execution.Takes.FirstOrDefault(t => t.Id == _timeline.SelectedTake);
-        var source = take?.Inputs ?? _execution.Inputs.ToArray(); var offset = take?.Start ?? 0;
-        _selectedInput = start >= offset && start < end && end <= offset + source.Length ? start : -1;
-        _selectionLabel.Text = start > source.Length + offset ? $"No recorded input · group {start}" : _selectedInput < 0 ? "Pending next frame group" : $"{take?.Name ?? "Active playback"} · groups [{start}, {end})";
+        IReadOnlyList<ControllerState> source = take?.Inputs ?? _execution.Inputs; var offset = take?.Start ?? 0;
+        _selectedInput = start >= offset && start < end && end <= offset + source.Count ? start : -1;
+        _selectionLabel.Text = start > source.Count + offset ? $"No recorded input · group {start}" : _selectedInput < 0 ? "Pending next frame group" : $"{take?.Name ?? "Active playback"} · groups [{start}, {end})";
         if (_timeline.SelectedTake != null && _selectedInput < 0) _selectionLabel.Text = "Select inputs inside this candidate to edit it.";
-        if ((_advanceHeld || UsesControllerInput) && AuthoringNewInput)
+        if (UsesControllerInput || (_advanceHeld && AuthoringNewInput))
         {
             // Keep live/held controls visible instead of briefly loading the next
             // recorded input before the next UI refresh replaces it again.
@@ -274,7 +274,7 @@ public sealed partial class MainWindow
             RefreshControllerInput(); UpdateExecutionTargetLabel();
             return;
         }
-        var selected = _selectedInput < 0 ? new[] { start > source.Length + offset ? ControllerState.Neutral : _pendingTasInput } : source.Skip(start - offset).Take(end - start).ToArray();
+        var selected = _selectedInput < 0 ? new[] { start > source.Count + offset ? ControllerState.Neutral : _pendingTasInput } : source.Skip(start - offset).Take(end - start).ToArray();
         _loadingInspector = true;
         foreach (var (button, check) in _buttons)
         {
@@ -294,7 +294,9 @@ public sealed partial class MainWindow
             ? "Earlier inputs changed — use Seek before advancing."
             : _timeline.SelectedTake != null
             ? $"Active frame group {_execution.Position:N0} · Poll {CurrentPollPosition:N0}"
-            : $"{(UsesControllerInput ? "Controller · " : "")}Frame group {_execution.Position:N0} · Poll {CurrentPollPosition:N0}";
+            : $"{(UsesControllerInput ? "Live controller · " : "")}Frame group {_execution.Position:N0} · Poll {CurrentPollPosition:N0}";
+        if (UsesControllerInput && _execution.Position < (ulong)_execution.Inputs.Count)
+            _executionTargetLabel.Text += " · Next Frame plays recorded input";
         ToolTip.SetTip(_executionTargetLabel, _timeline.SelectedTake != null
             ? "Candidate edits stay separate. Next Frame plays the active timeline; use Audition to preview this candidate."
             : "Next Frame plays recorded input unchanged, or uses displayed controls for a new frame. Editing changes the selected input. Selection does not move the preview; use Seek to selection.");
@@ -314,8 +316,8 @@ public sealed partial class MainWindow
         var editable = _timeline.SelectedFrame <= _execution.Inputs.Count;
         _manualInputControls.IsEnabled = editable && !UsesControllerInput && !_advanceHeld;
         foreach (var check in _buttons.Values) check.IsEnabled = editable;
-        ToolTip.SetTip(_useController, $"{_input.DeviceStatus}. Mirror mapped input and sample it on Next Frame; configure the device in Controllers.");
-        if (!_execution.IsLoaded || !AuthoringNewInput) return;
+        ToolTip.SetTip(_useController, $"{_input.DeviceStatus}. Preview live mapped input; new frames sample it on advance. Turn off to view or edit selected recorded input. Configure the device in Controllers.");
+        if (!_execution.IsLoaded || (!UsesControllerInput && !AuthoringNewInput)) return;
         var liveDisplay = UsesControllerInput || _advanceHeld;
         var state = _turboInput.Apply(UsesControllerInput ? _input.Read() : _heldManualInput ?? ShownInput(_pendingTasInput), _execution.Position);
         _loadingInspector = true;
@@ -341,10 +343,10 @@ public sealed partial class MainWindow
         var position = _execution.Position;
         var fallback = position < (ulong)_execution.Inputs.Count ? _execution.Inputs[(int)position] : _pendingTasInput;
         var shown = UsesControllerInput ? _input.Read() : _heldManualInput ?? ShownInput(fallback);
-        if (EditingAtPreview || _advanceHeld) shown = _turboInput.Apply(shown, _execution.Position);
+        if (UsesControllerInput || EditingAtPreview || _advanceHeld) shown = _turboInput.Apply(shown, _execution.Position);
         var candidate = _timeline.SelectedTake != null;
         // Supplied controls only fill a missing group; execution preserves every existing group.
-        if (blankInput) shown = ControllerState.Neutral;
+        if (blankInput && !UsesControllerInput) shown = ControllerState.Neutral;
         var atEnd = _timeline.SelectedFrame == _execution.Inputs.Count;
         var followsPreview = (ulong)_timeline.SelectedFrame == position && (ulong)_timeline.SelectionEnd == position + 1;
         _audio.Flush();

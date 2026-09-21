@@ -60,12 +60,25 @@ public sealed partial class MainWindow
     {
         if (!_execution.IsLoaded) return;
         await FlushInputEditsAsync();
-        if (_execution.IsRunning) { await _execution.PauseAsync(); _audio.Flush(); }
+        if (_execution.IsRunning) await PausePlayback();
         else if (_execution.IsManualPlay) await _execution.RunAsync();
         else await _execution.PlayRecordedAsync();
     }
-    private async Task PausePlayback() { await _execution.PauseAsync(); _audio.Flush(); }
-    private async Task RecordLive() { await FlushInputEditsAsync(); await _execution.RunAsync(); }
+    private async Task PausePlayback()
+    {
+        var recording = _execution.IsRecordingLive;
+        await _execution.PauseAsync(); _audio.Flush();
+        if (recording) SelectPreviewInput();
+    }
+    private async Task RecordLive()
+    {
+        if (!_execution.HasProject) return;
+        if (_execution.IsRecordingLive) { await PausePlayback(); return; }
+        await FlushInputEditsAsync(); await PausePlayback(); StopHeldAdvance();
+        _useController.IsChecked = true;
+        SelectPreviewInput(); _transportRecord.Focus(); UpdateInputAcceptance();
+        await _execution.RunAsync();
+    }
     private async Task PreviousState()
     {
         await FlushInputEditsAsync(); await _execution.PauseAsync(); _audio.Flush();

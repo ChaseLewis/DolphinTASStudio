@@ -21,8 +21,8 @@ public sealed record ExperimentDefinition(int Version, string Name,
     public void Validate()
     {
         TopPlays?.Validate();
-        if (Version != 1 || string.IsNullOrWhiteSpace(Name) || Parallelism is < 1 or > 4 || TimeoutSeconds is < 1 or > 86400 || Trials is not { Length: > 0 })
-            throw new InvalidDataException("Experiment needs a name, at least one trial, 1–4 workers and a 1–86400 second timeout.");
+        if (Version != 1 || string.IsNullOrWhiteSpace(Name) || Parallelism is < 1 or > 8 || TimeoutSeconds is < 1 or > 86400 || Trials is not { Length: > 0 })
+            throw new InvalidDataException("Experiment needs a name, at least one trial, 1–8 workers and a 1–86400 second timeout.");
         if (!Enum.IsDefined(Start) || (Start == ExperimentStart.SaveState && string.IsNullOrWhiteSpace(StateId))) throw new InvalidDataException("Select a starting save state.");
         if (!double.IsFinite(PrerollSeconds) || PrerollSeconds is < 0 or > 86400 || PrerollGroups is < 0 or > 10000000 || (PrerollSeconds > 0 && PrerollGroups > 0))
             throw new InvalidDataException("Choose movie preroll in seconds or frame groups.");

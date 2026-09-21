@@ -1,0 +1,36 @@
+namespace Skies;
+
+/// <summary>GameCube US item IDs from SOARandomizer shipitem.csv. Values are global item IDs.</summary>
+public enum ShipItem : ushort
+{
+    Bomb = 480,
+    BigBomb = 481,
+    ConcussionBomb = 482,
+    ShredderBomb = 483,
+    PyroBomb = 484,
+    FrostBomb = 485,
+    SilencerBomb = 486,
+    ThunderBomb = 487,
+    ElectroBomb = 488,
+    WaveBomb = 489,
+    RepairKit = 490,
+    DeluxeKit = 491,
+    MagicKit = 492,
+    CompleteKit = 493,
+    GearGrease = 494,
+    ThermalGrease = 495,
+    CaptainsStripe = 496,
+    ApaWax = 497,
+    ApoWax = 498,
+    SpeedWax = 499,
+    HybridWax = 500,
+    HeatSensor = 501,
+    RudderGrease = 502,
+    MachineOil = 503,
+    LightAlloy = 504,
+    HexShell = 505,
+    MagicShell = 506,
+    GoldBullion = 507,
+    CrystalBall = 508,
+    MagicCannon = 509,
+}

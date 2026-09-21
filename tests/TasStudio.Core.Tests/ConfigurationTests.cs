@@ -116,7 +116,7 @@ public sealed class ConfigurationTests
     public async Task ProjectRoundtripPersistsCheckpointPolicyAndDiskStates()
     {
         using var w = new TestWorkspace(); var path = w.FilePath("movie.tasproj");
-        var policy = new CheckpointPolicy(IntervalSeconds: 1, MaximumCount: 2, Retention: CheckpointRetention.LeastRecentlyUsed, DiskBudgetMiB: 32);
+        var policy = new CheckpointPolicy(IntervalSeconds: 1, MaximumCount: 2, Retention: CheckpointRetention.LeastRecentlyUsed, DiskBudgetMiB: 32, CaptureWhileRecording: true);
         using (var s = new ExecutionService(new FakeBackend()))
         {
             await Start(s, w); await s.ConfigureCheckpointsAsync(policy); await Step(s, 120); await s.SaveProjectAsync(path);
