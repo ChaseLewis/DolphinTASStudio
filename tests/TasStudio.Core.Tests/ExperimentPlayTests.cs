@@ -371,6 +371,9 @@ public sealed class ExperimentPlayTests
         Assert.True(build.ExitCode == 0, await stdout + await stderr);
         using var source = new ExecutionService(Backend()); var (path, state) = await Source(files, source);
         using var assembly = new ExperimentAssembly(Path.Combine(experiment, "bin/Debug/net10.0/LegacyExperiment.dll"), loadInMemory: true);
+        // Both shared contracts must retain their identity in version-stamped release builds.
+        Assert.Same(typeof(ControllerState).Assembly, assembly.LoadFromAssemblyName(
+            new System.Reflection.AssemblyName("TasStudio.Core, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null")));
         using var worker = new ExecutionService(Backend());
         var result = await ExperimentWorker.RunAsync(Job(files, path, state), worker, default, assembly.Create("LegacyExperiment"));
         Assert.Equal("completed", result.Status); Assert.Equal(42, result.Value!.Value.GetProperty("Score").GetInt32());
