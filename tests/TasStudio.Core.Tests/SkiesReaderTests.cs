@@ -153,7 +153,7 @@ public sealed class SkiesReaderTests
         Assert.Equal(8, inventory.Slots.Count);
         Assert.Equal(13, inventory.ElectriCount);
         Assert.Equal(9, inventory.MoonberryCount);
-        Assert.Equal("Electri", inventory.Slots[0].ItemName);
+        Assert.Equal("Electri Box", inventory.Slots[0].ItemName);
         Assert.Equal("Moonberry", inventory.Slots[1].ItemName);
         Assert.Equal("Item 42", inventory.Slots[4].ItemName);
         Assert.Equal(7, inventory.CountItem(-1));

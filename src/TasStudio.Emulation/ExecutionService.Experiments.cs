@@ -41,15 +41,69 @@ public sealed partial class ExecutionService
         return new ExperimentPlay(index, name, score, anchor.Start, end - anchor.Start, data.Encode());
     });
 
-    public Task ApplyExperimentPlayAsync(ExperimentPlay play)
+    public Task ApplyExperimentPlayAsync(ExperimentPlay play) => ApplyExperimentPlayAsync(play, allowHistoryMismatch: false);
+
+    public Task<string> ApplyExperimentPlayAsTakeAsync(ExperimentPlay play, bool allowHistoryMismatch = false)
+    {
+        var data = ExperimentPlayData.Decode(play);
+        return Enqueue(() =>
+        {
+            RequireProject(); Pause();
+            if (play.Start > _inputs.Count || (long)play.Start + play.Length > FolderProject.MaximumFrames)
+                throw new InvalidDataException("This take requires a valid starting position within Active playback.");
+            var baseline = _history!.At((ulong)play.Start);
+            if (baseline != data.BaselineHash)
+            {
+                if (!allowHistoryMismatch) throw new ExperimentPlayHistoryMismatchException();
+                data = data with { BaselineHash = baseline, PollFrames = [] };
+            }
+            var receipt = play with { Data = data.Encode() };
+            RememberEdit();
+            var id = Guid.NewGuid().ToString("N");
+            _takes.Add(new(id, play.Name, play.Start, data.Inputs, baseline, "Experiment play")
+                { Experiment = receipt, EventsHash = EventsHash(play.Start, play.Length) });
+            Interlocked.Increment(ref _revision);
+            Notify("Experiment play added as a take; active playback unchanged");
+            return id;
+        });
+    }
+
+    private void ApplyTakeRecording(InputTake take, int sourceOffset, int start, int length)
+    {
+        var data = take.Experiment is { } play ? ExperimentPlayData.Decode(play) : null;
+        for (var i = 0; i < length; i++)
+        {
+            var input = take.Inputs[sourceOffset + i];
+            if (start + i < _inputs.Count) _inputs[start + i] = input;
+            else _inputs.Add(input);
+        }
+        if (data == null) return;
+        var sourceStart = take.Start + sourceOffset;
+        var end = start + length;
+        _events.RemoveAll(e => e.Position >= (ulong)start && e.Position <= (ulong)end);
+        _events.AddRange(data.Events.Where(e => e.Position >= (ulong)sourceStart && e.Position <= (ulong)(sourceStart + length))
+            .Select(e => e with { Position = (ulong)((long)e.Position + start - sourceStart) }));
+        foreach (var index in _pollFrames.Keys.Where(i => i >= start).ToArray()) _pollFrames.Remove(index);
+        // Prefix hashes gate replay; moved or edited inputs regenerate their timing.
+        if (start == sourceStart)
+            foreach (var frame in data.PollFrames.Where(f => f.Index >= start && f.Index < end && f.Frame.Input == _inputs[f.Index]))
+                _pollFrames.Add(frame.Index, frame);
+    }
+
+    /// <summary>Explicitly allow a different baseline. Range/data validation still applies;
+    /// mismatched recorded poll timings are discarded and rebuilt by playback.</summary>
+    public Task ApplyExperimentPlayAsync(ExperimentPlay play, bool allowHistoryMismatch)
     {
         // Decode and validate all data before entering the mutation.
         var data = ExperimentPlayData.Decode(play);
         return Enqueue(() =>
         {
             RequireProject(); Pause();
-            if (play.Start > _inputs.Count || _history!.At((ulong)play.Start) != data.BaselineHash)
-                throw new InvalidDataException("This play's starting history does not match Active playback. Open its original project and restore the preceding inputs/settings.");
+            if (play.Start > _inputs.Count)
+                throw new InvalidDataException("This play starts beyond the end of Active playback. Restore the missing preceding inputs first.");
+            var historyMatches = _history!.At((ulong)play.Start) == data.BaselineHash;
+            if (!historyMatches && !allowHistoryMismatch)
+                throw new ExperimentPlayHistoryMismatchException();
             RememberEdit();
             for (var i = 0; i < play.Length; i++)
                 if (play.Start + i < _inputs.Count) _inputs[play.Start + i] = data.Inputs[i]; else _inputs.Add(data.Inputs[i]);
@@ -57,7 +111,8 @@ public sealed partial class ExecutionService
             _events.RemoveAll(e => e.Position >= (ulong)play.Start && e.Position <= (ulong)end);
             _events.AddRange(data.Events);
             foreach (var index in _pollFrames.Keys.Where(i => i >= play.Start).ToArray()) _pollFrames.Remove(index);
-            foreach (var frame in data.PollFrames) _pollFrames.Add(frame.Index, frame);
+            if (historyMatches)
+                foreach (var frame in data.PollFrames) _pollFrames.Add(frame.Index, frame);
             var sections = new List<TimelineSection>();
             foreach (var section in _sections)
             {

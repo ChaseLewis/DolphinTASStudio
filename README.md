@@ -138,7 +138,10 @@ for local packaging and verification.
 | `just build` | `artifacts/prod/` | Normal local settings, unless a data-path marker is supplied |
 
 `just dev` reports the existing app's PID when it is already running. Close that
-instance and rerun the command to rebuild it. Neither dev command deletes a workspace.
+instance and rerun the command to rebuild it. If experiment workers still use that
+build, the command reports their PIDs and stops before rebuilding. Wait for the
+experiments to finish or cancel them, or use `just dev-unique` to build and run
+alongside them. Neither dev command deletes a workspace.
 Projects stay wherever you save them; opening the same project from two workspaces
 still opens the same files.
 
@@ -240,11 +243,13 @@ and `context.Movie` indices are **frame groups**, not individual polls.
 
 | Control | Behavior |
 | --- | --- |
+| Record / Stop | Play in real time, preserving existing frames and appending live controller input at the end; enables the controller preview and follows the recording |
 | F11 / Next Frame | Advance and move the cursor; absent input uses the displayed input |
-| F10 | Advance and move the cursor; absent input uses neutral input |
+| F10 | Advance and move the cursor; absent input uses the live controller when Use controller is enabled, otherwise neutral input |
 | F12 | Play one existing recorded group without moving the cursor; stop at the recorded end |
 | Shift+F11, held | Repeat advances; release either key or lose focus to stop |
 | Left / Right | Move the timeline cursor one group without seeking |
+| Shift+Left / Shift+Right | Move the selected inputs one frame group left / right |
 | Escape | Pause; leave fullscreen first if applicable |
 | Ctrl+S | Save the project |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
@@ -260,6 +265,16 @@ Middle-click the timeline to add a visual tag. Right-click state/checkpoint mark
 to load or clear them. Clear later input preserves the selected group and visual tags.
 Applying a take at the cursor replaces input starting there without shifting later
 input; it removes the applied take, and Undo restores both.
+
+Drag across the timeline to select a range, then drag inside that selection to move
+it. **Shift+drag** also moves a single selected group. The destination outline previews
+the move; release to apply it or press **Escape** to cancel. **Shift+Left/Right** nudges
+the selection one frame group at a time; these actions also appear in the timeline's
+editing menu. Moves leave neutral inputs behind and replace inputs at the destination,
+including overlapping ranges. Moving beyond the active recording extends it with
+neutral input in any gap. Candidate inputs move within their existing take boundaries.
+Use **Ctrl+Z** to undo a move and **Seek** to refresh a preview affected by earlier edits.
+Unexecuted groups use frame-group spacing until replay records their poll timing.
 
 ### State validity and persistence
 

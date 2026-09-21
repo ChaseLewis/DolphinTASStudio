@@ -76,6 +76,8 @@ public sealed class ExecutionHistory
 public sealed record InputTake(string Id, string Name, int Start, ControllerState[] Inputs, string BaselineHash, string Provenance)
 {
     public string? EventsHash { get; init; }
+    // Immutable source receipt supplies events/poll timing; Inputs remain editable.
+    internal ExperimentPlay? Experiment { get; init; }
 }
 public sealed record TimelineSection(int Start, int Length, string Name);
 public sealed record SavedStateReference(string Id, string Name, ulong Position, string HistoryHash, string Path)

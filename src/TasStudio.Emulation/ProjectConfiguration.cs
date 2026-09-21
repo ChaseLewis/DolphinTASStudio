@@ -71,7 +71,8 @@ public sealed record EmulationConfiguration
 
 public enum CheckpointRetention { OldestCreated, LeastRecentlyUsed }
 public sealed record CheckpointPolicy(bool Enabled = true, int IntervalSeconds = 60, int MaximumCount = 300,
-    CheckpointRetention Retention = CheckpointRetention.OldestCreated, int DiskBudgetMiB = 4096)
+    CheckpointRetention Retention = CheckpointRetention.OldestCreated, int DiskBudgetMiB = 4096,
+    bool CaptureWhileRecording = false)
 {
     public void Validate()
     {

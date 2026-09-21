@@ -30,6 +30,11 @@ if (args.Contains("realtime-playback"))
     RealtimePlayback.Run(rom, output, Option("--movie"), int.Parse(Option("--start") ?? "0"), int.Parse(Option("--groups") ?? "600"));
     return;
 }
+if (args.Contains("recording-checkpoints"))
+{
+    await RecordingCheckpoints.Run(rom, output, args.Contains("--checkpoints-while-recording"));
+    return;
+}
 if (args.Contains("manual-play-create") || args.Contains("manual-play-restore"))
 {
     await ManualPlay.Run(rom, output, args.Contains("manual-play-restore"));

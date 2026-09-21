@@ -12,6 +12,7 @@ public sealed partial class MainWindow
 {
     private Task ApplicationSettings() => ApplicationSettingsCore(null);
     private Task CheckpointSettings() => ApplicationSettingsCore(null, 4);
+    private Task TimelineSettings() => ApplicationSettingsCore(null, 5);
     internal async Task ApplicationSettingsCore(string? capturePath, int selectedTab = 0)
     {
         await _execution.PauseAsync(); _audio.Flush();
@@ -47,11 +48,14 @@ public sealed partial class MainWindow
         pages["Audio"].Children.Add(SettingsNote("Listening volume and mute are available on the toolbar. DSP settings affect emulation and are saved with this project."));
         var checkpointPage = SettingsPage();
         var enabled = new CheckBox { Content = "Create automatic checkpoints", IsChecked = policy.Enabled };
+        var duringRecording = new CheckBox { Name = "CheckpointsWhileRecording", Content = "Create checkpoints during live recording", IsChecked = policy.CaptureWhileRecording };
         var interval = new NumericUpDown { Minimum = 1, Maximum = 86400, Value = policy.IntervalSeconds, FormatString = "0" };
         var count = new NumericUpDown { Minimum = 1, Maximum = 10000, Value = policy.MaximumCount, FormatString = "0" };
         var budget = new NumericUpDown { Minimum = 1, Maximum = 1048576, Value = policy.DiskBudgetMiB, FormatString = "0" };
         var retention = new ComboBox { ItemsSource = new[] { "Remove oldest created", "Remove least recently used (LRU)" }, SelectedIndex = (int)policy.Retention, HorizontalAlignment = HorizontalAlignment.Stretch };
         checkpointPage.Children.Add(enabled);
+        checkpointPage.Children.Add(duringRecording);
+        checkpointPage.Children.Add(SettingsNote("Off by default for smoother controller play: a due checkpoint is saved when you pause. Turning this on keeps periodic restore points, but capturing the game state can briefly interrupt recording. Disk writes run in the background."));
         checkpointPage.Children.Add(SettingsRow("Interval (emulated seconds)", interval));
         checkpointPage.Children.Add(SettingsRow("Maximum checkpoint count", count));
         checkpointPage.Children.Add(SettingsRow("Disk budget (MiB)", budget));
@@ -59,13 +63,22 @@ public sealed partial class MainWindow
         checkpointPage.Children.Add(SettingsNote("Default: every 60 seconds, up to 300 checkpoints within 4096 MiB. Use 300 seconds for five-minute spacing. The project baseline is always retained."));
         checkpointPage.Children.Add(SettingsNote("Invalid automatic checkpoints are deleted after earlier edits. Invalid named states disappear from the timeline. Undo restores inputs, but does not resurrect removed states."));
         checkpointPage.Children.Add(SettingsNote("Checkpoints and named states are stored on disk and included when you save the project. Reducing a limit trims the active cache immediately."));
-        void EnableCheckpointControls() { foreach (var control in new Control[] { interval, count, budget, retention }) control.IsEnabled = enabled.IsChecked == true; }
+        void EnableCheckpointControls() { foreach (var control in new Control[] { duringRecording, interval, count, budget, retention }) control.IsEnabled = enabled.IsChecked == true; }
         enabled.IsCheckedChanged += (_, _) => EnableCheckpointControls(); EnableCheckpointControls();
         var projectTabs = pages.Select(p => SettingsTab(p.Key, p.Value)).Append(SettingsTab("Checkpoints", checkpointPage)).ToArray();
         foreach (var tab in projectTabs) tab.IsEnabled = _execution.IsLoaded && (!Equals(tab.Header, "Checkpoints") || _execution.HasProject);
         var interfaceTab = SettingsTab("Interface", BuildInterfaceSettings(_settings, _settings.Save));
-        var tabItems = projectTabs.Append(interfaceTab).ToArray();
-        var tabs = new TabControl { Name = "ConfigurationTabs", ItemsSource = tabItems, SelectedIndex = _execution.HasProject ? selectedTab : projectTabs.Length };
+        var timelinePage = SettingsPage();
+        var timeOffset = new NumericUpDown { Name = "TimelineTimeOffset", Minimum = 0,
+            Maximum = (TimeSpan.MaxValue.Ticks / TimeSpan.TicksPerMillisecond) / 1000m,
+            Increment = 0.001m, FormatString = "0.000", Value = _execution.TimelineOffsetMilliseconds / 1000m };
+        timelinePage.Children.Add(SettingsRow("Run start offset (seconds)", timeOffset));
+        timelinePage.Children.Add(SettingsNote("Subtract this time from the timeline clock. For example, 90.500 makes 00:01:30.500 display as 00:00:00.000. Times before the run start are negative."));
+        timelinePage.Children.Add(SettingsNote("Saved with this project. Applies only to the displayed time; emulation, inputs, saved states, and checkpoint timing are unchanged."));
+        var timelineTab = SettingsTab("Timeline", timelinePage);
+        timelineTab.IsEnabled = _execution.HasProject;
+        var tabItems = projectTabs.Append(timelineTab).Append(interfaceTab).ToArray();
+        var tabs = new TabControl { Name = "ConfigurationTabs", ItemsSource = tabItems, SelectedIndex = _execution.HasProject ? selectedTab : tabItems.Length - 1 };
         Grid.SetRow(tabs, 1); layout.Children.Add(tabs);
         var replay = new CheckBox { Content = "After an emulation change, replay to selected input", IsChecked = true, IsEnabled = _execution.HasProject };
         var note = SettingsNote(_execution.IsManualPlay ? "Apply restarts Play from boot. Save a state first to keep the current position. Memory cards persist." : "Emulation changes restart from boot with a new baseline, preserve inputs/events, and remove existing state markers. Checkpoint settings apply without a restart.");
@@ -81,12 +94,23 @@ public sealed partial class MainWindow
         {
             try
             {
+                if (tabs.SelectedItem == timelineTab)
+                {
+                    if (timeOffset.Value is not { } seconds)
+                        throw new InvalidDataException("Enter a run start offset in seconds.");
+                    applying = true;
+                    apply.IsEnabled = cancel.IsEnabled = tabs.IsEnabled = false;
+                    await _execution.SetTimelineOffsetAsync(checked((long)decimal.Round(seconds * 1000, 0, MidpointRounding.AwayFromZero)));
+                    applying = false;
+                    dialog.Close(true);
+                    return;
+                }
                 if (!DateTimeOffset.TryParseExact(utc.Text?.Trim(), "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var start))
                     throw new InvalidDataException("Enter UTC as yyyy-MM-dd HH:mm:ss.");
                 var values = new SortedDictionary<string,string>(StringComparer.Ordinal);
                 foreach (var setting in EmulationConfiguration.Settings) values.Add(setting.Key, setting.Values[editors[setting.Key].SelectedIndex]);
                 var next = (original with { StartUtcSeconds = start.ToUnixTimeSeconds(), Options = values }).ValidatedCopy();
-                var nextPolicy = new CheckpointPolicy(enabled.IsChecked == true, (int)interval.Value!, (int)count.Value!, (CheckpointRetention)retention.SelectedIndex, (int)budget.Value!);
+                var nextPolicy = new CheckpointPolicy(enabled.IsChecked == true, (int)interval.Value!, (int)count.Value!, (CheckpointRetention)retention.SelectedIndex, (int)budget.Value!, duringRecording.IsChecked == true);
                 nextPolicy.Validate();
                 applying = true;
                 apply.IsEnabled = cancel.IsEnabled = tabs.IsEnabled = false; note.Text = "Applying project settings…";
@@ -98,7 +122,7 @@ public sealed partial class MainWindow
                     await RememberPlayConfiguration();
                 }
                 else if (emulationChanged) await WithGameLoading(() => _execution.ApplyConfigurationAsync(next, nextPolicy), dialog);
-                else await _execution.ConfigureCheckpointsAsync(nextPolicy);
+                else if (nextPolicy != policy) await _execution.ConfigureCheckpointsAsync(nextPolicy);
                 replayAfterApply = _execution.HasProject && emulationChanged && replay.IsChecked == true;
                 applying = false;
                 dialog.Close(true);
@@ -109,7 +133,13 @@ public sealed partial class MainWindow
         void RefreshScope()
         {
             var interfaceSelected = tabs.SelectedItem == interfaceTab;
+            var timelineSelected = tabs.SelectedItem == timelineTab;
             footer.IsVisible = apply.IsVisible = !interfaceSelected;
+            replay.IsVisible = _execution.HasProject && !timelineSelected;
+            apply.Content = timelineSelected ? "Apply timeline settings" : _execution.IsManualPlay ? "Apply & restart Play" : "Apply to project";
+            note.Text = timelineSelected ? "Only the timeline clock changes. No emulator restart or replay."
+                : _execution.IsManualPlay ? "Apply restarts Play from boot. Save a state first to keep the current position. Memory cards persist."
+                : "Emulation changes restart from boot with a new baseline, preserve inputs/events, and remove existing state markers. Checkpoint settings apply without a restart.";
             cancel.Content = interfaceSelected ? "Close" : "Cancel";
         }
         tabs.SelectionChanged += (_, _) => RefreshScope(); RefreshScope();
