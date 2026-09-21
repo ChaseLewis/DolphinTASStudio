@@ -217,10 +217,14 @@ public sealed partial class MainWindow
         _status.Text = "Experiment started. Results: " + run.BatchDirectory;
     }
 
-    private void ShowExperimentPlays(IEnumerable<string> batches) =>
-        new ExperimentPlaysWindow(batches, ApplyExperimentPlay).Show(this);
+    private void ShowExperimentPlays(IEnumerable<string> batches)
+    {
+        ExperimentPlaysWindow? window = null;
+        window = new ExperimentPlaysWindow(batches, (batch, summary, asTake) => ApplyExperimentPlay(batch, summary, window!, asTake));
+        window.Show(this);
+    }
 
-    private async Task ApplyExperimentPlay(string batch, ExperimentPlaySummary summary)
+    private async Task<bool> ApplyExperimentPlay(string batch, ExperimentPlaySummary summary, Window owner, bool asTake)
     {
         if (_busy) throw new InvalidOperationException("Wait for the current project operation to finish.");
         _busy = true;
@@ -228,12 +232,28 @@ public sealed partial class MainWindow
         {
             await FlushInputEditsAsync();
             var play = await Task.Run(() => ExperimentPlayResults.Load(batch, summary.TrialIndex, summary.SubmissionIndex));
-            await _execution.ApplyExperimentPlayAsync(play);
+            string? takeId = null;
+            async Task Apply(bool allowHistoryMismatch = false)
+            {
+                if (asTake) takeId = await _execution.ApplyExperimentPlayAsTakeAsync(play, allowHistoryMismatch);
+                else await _execution.ApplyExperimentPlayAsync(play, allowHistoryMismatch);
+            }
+            try { await Apply(); }
+            catch (ExperimentPlayHistoryMismatchException)
+            {
+                var warning = new ExperimentPlayMismatchWindow(play.Name, play.Start, play.Length, asTake);
+                if (!await warning.ShowDialog<bool>(owner)) return false;
+                await Apply(allowHistoryMismatch: true);
+            }
             _audio.Flush();
             _timeline.InputCount = _execution.Inputs.Count;
-            _timeline.SetSelection(play.Start, play.Start + play.Length);
+            _timeline.Takes = _execution.Takes;
+            _timeline.SetSelection(play.Start, play.Start + play.Length, takeId);
+            _timeline.RevealSelection();
             LoadSelectedInput();
-            _status.Text = $"Applied {play.Name} to Active playback. Seek to preview; Undo restores previous inputs.";
+            _status.Text = asTake ? $"Added {play.Name} as a take. Active playback unchanged; Undo removes the take."
+                : $"Applied {play.Name} to Active playback. Seek to preview; Undo restores previous inputs.";
+            return true;
         }
         finally { _busy = false; Refresh(); }
     }

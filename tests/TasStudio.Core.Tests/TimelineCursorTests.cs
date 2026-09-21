@@ -174,13 +174,14 @@ public sealed class TimelineCursorTests
             main.ShowEditor(); main.Show(); main.UpdateLayout(); Dispatcher.UIThread.RunJobs();
             var timeline = main.GetVisualDescendants().OfType<TimelineView>().Single();
             timeline.SetSelection(1, 2);
-            main.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "UseController").IsChecked = true;
+            var use = main.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "UseController");
             var button = main.GetVisualDescendants().OfType<CheckBox>().Single(c => Equals(c.Content, "A"));
             button.Focus(); button.IsChecked = true;
             // Drain the execution queue so the historical edit is published.
             await service.PauseAsync(); Dispatcher.UIThread.RunJobs();
             Assert.True(service.Inputs[1].Buttons.HasFlag(TasStudio.Core.PadButtons.A));
             Assert.False(service.IsPreviewCurrent);
+            use.IsChecked = true;
             var revision = service.Revision;
             Press(main, PhysicalKey.ArrowRight); Assert.Equal(2, timeline.SelectedFrame);
             Assert.False(button.IsChecked);

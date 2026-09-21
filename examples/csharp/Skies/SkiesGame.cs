@@ -5,8 +5,8 @@ namespace Skies;
 /// <summary>Read-only game components for the ROM revision used by SkiesScanner.</summary>
 public sealed partial class SkiesGame
 {
-    public const ushort Electri = 273;
-    public const ushort Moonberry = 258;
+    public const ushort Electri = (ushort)UsableItem.ElectriBox;
+    public const ushort Moonberry = (ushort)UsableItem.Moonberry;
 
     public SkiesGame(IExperimentEmulator emulator) : this(new GameCubeMemoryReader(emulator)) { }
     public SkiesGame(GameCubeMemoryReader memory) => Memory = memory ?? throw new ArgumentNullException(nameof(memory));
@@ -35,4 +35,8 @@ public sealed partial class SkiesGame
     public async Task<int> ReadElectriCountAsync() => (await ReadInventoryAsync()).ElectriCount;
     public async Task<int> ReadMoonberryCountAsync() => (await ReadInventoryAsync()).MoonberryCount;
     public async Task<int> CountItemAsync(ushort item) => (await ReadInventoryAsync()).CountItem(item);
+    /// <summary>Counts this item in the existing eight-slot battle-drop table, not owned inventory.</summary>
+    public Task<int> CountItemAsync(UsableItem item) => CountItemAsync((ushort)item);
+    /// <summary>Counts this item in the existing eight-slot battle-drop table, not owned inventory.</summary>
+    public Task<int> CountItemAsync(ShipItem item) => CountItemAsync((ushort)item);
 }

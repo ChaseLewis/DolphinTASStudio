@@ -28,6 +28,13 @@ public sealed record ExperimentTopPlays(string ScoreField = "Score", bool Higher
 
 /// <summary>Compressed, immutable-on-submission timeline snapshot; no savestate/profile assets are retained.</summary>
 public sealed record ExperimentPlay(int SubmissionIndex, string Name, double Score, int Start, int Length, byte[] Data);
+
+/// <summary>The play is structurally valid, but applying it requires an explicit history override.</summary>
+public sealed class ExperimentPlayHistoryMismatchException : InvalidOperationException
+{
+    public ExperimentPlayHistoryMismatchException() : base(
+        "This play's starting history does not match Active playback. Its result may differ if applied here.") { }
+}
 internal sealed record ExperimentPlayAnchor(int Start, string PrefixHash, string BaselineHash);
 internal sealed record ExperimentPlayData(string BaselineHash, ControllerState[] Inputs, ExecutionEvent[] Events, RecordedInputFrame[] PollFrames)
 {

@@ -21,6 +21,7 @@ public sealed record ArchiveMetadata(int Version, string Kind, string BackendIde
     // Provenance, not a claim that recordings or experiment results were reverified.
     public EmulatorRuntime[] RuntimeHistory { get; init; } = [];
     public CheckpointPolicy? Checkpoints { get; init; }
+    public long TimelineOffsetMilliseconds { get; init; }
     public ProjectStart? Start { get; init; }
     public TimelineTag[] Tags { get; init; } = [];
     public RecordedInputFrame[] PollFrames { get; init; } = [];
@@ -113,6 +114,8 @@ public static class ProjectArchive
         }
         if (metadata.Start is { } start && !Enum.IsDefined(start.Kind)) throw new InvalidDataException("Unknown project starting point.");
         metadata.Checkpoints?.Validate();
+        if (metadata.TimelineOffsetMilliseconds < 0 || metadata.TimelineOffsetMilliseconds > TimeSpan.MaxValue.Ticks / TimeSpan.TicksPerMillisecond)
+            throw new InvalidDataException("Invalid timeline time offset.");
         if (metadata.Configuration is { } configuration)
         {
             configuration.ValidatedCopy();

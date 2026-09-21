@@ -85,11 +85,11 @@ public sealed class PollRecordingTests
             var timeline = main.GetVisualDescendants().OfType<TimelineView>().Single();
             timeline.VisibleFrames = 10; timeline.FirstFrame = 0; timeline.Update(); main.UpdateLayout();
             var label = main.GetVisualDescendants().OfType<TextBlock>().Single(b => b.Name == "TimelinePosition");
-            Assert.Equal("Time: 00:00:00 | Frame: 4 | Poll: 8", label.Text);
+            Assert.Equal("Time: 00:00:00.067 | Frame: 4 | Poll: 8", label.Text);
             timeline.Focus(); main.KeyPressQwerty(PhysicalKey.F11, RawInputModifiers.None);
             main.KeyReleaseQwerty(PhysicalKey.F11, RawInputModifiers.None);
-            for (var i = 0; i < 200 && label.Text != "Time: 00:00:00 | Frame: 6 | Poll: 12"; i++) { await Task.Delay(10); Dispatcher.UIThread.RunJobs(); }
-            Assert.Equal("Time: 00:00:00 | Frame: 6 | Poll: 12", label.Text);
+            for (var i = 0; i < 200 && label.Text != "Time: 00:00:00.100 | Frame: 6 | Poll: 12"; i++) { await Task.Delay(10); Dispatcher.UIThread.RunJobs(); }
+            Assert.Equal("Time: 00:00:00.100 | Frame: 6 | Poll: 12", label.Text);
             // Poll 5.5 is inside group 1 (polls 4..7), so select and edit all four polls.
             var x = 118 + 5.5 / 40 * (timeline.Bounds.Width - 118);
             var point = timeline.TranslatePoint(new Point(x, 76), main)!.Value;

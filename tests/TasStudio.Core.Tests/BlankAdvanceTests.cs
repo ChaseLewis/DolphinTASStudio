@@ -65,12 +65,12 @@ public sealed class BlankAdvanceTests
     }
 
     [AvaloniaFact]
-    public async Task LiveControllerCannotReplaceTheDisplayOrInputOfAParkedHistoricalCursor()
+    public async Task LiveControllerPreviewsAtRecordedAndParkedCursorsWithoutChangingSavedInput()
     {
         using var files = new TestWorkspace(); using var service = new ExecutionService(new FakeBackend());
         await service.LoadGameAsync(files.GamePath, files.Options); await service.NewProjectAsync();
         await service.SetInputAsync(0, ControllerState.Neutral with { Buttons = PadButtons.A });
-        var sample = new LiveInputSource.GamepadSample(true, new() { Buttons = GamepadButton.A });
+        var sample = new LiveInputSource.GamepadSample(true, new() { Buttons = GamepadButton.B, LeftX = short.MaxValue, RightY = short.MinValue, LeftTrigger = 255 });
         var physical = new LiveInputSource(_ => Volatile.Read(ref sample));
         var main = new MainWindow(["--layout-file", files.FilePath("layout.json")], new AppSettings { GamepadIndex = 0 }, service, physical);
         try
@@ -79,18 +79,78 @@ public sealed class BlankAdvanceTests
             var use = main.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "UseController");
             var a = main.GetVisualDescendants().OfType<CheckBox>().Single(c => Equals(c.Content, "A"));
             var b = main.GetVisualDescendants().OfType<CheckBox>().Single(c => Equals(c.Content, "B"));
+            var axes = Enumerable.Range(0, 6).Select(i => main.GetVisualDescendants().OfType<NumericUpDown>().Single(n => n.Name == "TasAxis" + i)).ToArray();
+            var timeline = main.GetVisualDescendants().OfType<TimelineView>().Single();
             var next = main.GetVisualDescendants().OfType<Button>().Single(c => c.Name == "NextFrame");
             var preview = main.GetVisualDescendants().OfType<TextBlock>().Single(t => t.Name == "PreviewFrame");
-            use.IsChecked = true; await Until(() => a.IsChecked == true);
+            var original = service.Inputs.ToArray(); var revision = service.Revision;
+            use.IsChecked = true;
+            await Until(() => b.IsChecked == true && a.IsChecked == false && axes[0].Value == 255 && axes[3].Value == 0 && axes[4].Value == 255);
+            Assert.Equal(original, service.Inputs); Assert.Equal(revision, service.Revision);
+            Assert.False(axes[0].IsEffectivelyEnabled);
+            use.IsChecked = false;
+            Assert.True(a.IsChecked); Assert.False(b.IsChecked); Assert.Equal(128m, axes[0].Value);
+            use.IsChecked = true;
             Press(main, PhysicalKey.F12);
             await Until(() => service.Position == 1 && next.IsEnabled && preview.Text == "Frame 1");
-            Volatile.Write(ref sample, new(true, new() { Buttons = GamepadButton.B }));
-            await Task.Delay(80); Dispatcher.UIThread.RunJobs();
-            Assert.True(use.IsChecked); Assert.True(a.IsChecked); Assert.False(b.IsChecked);
+            Volatile.Write(ref sample, new(true, new() { Buttons = GamepadButton.B, LeftX = short.MinValue }));
+            await Until(() => b.IsChecked == true && a.IsChecked == false && axes[0].Value == 0);
+            Assert.True(use.IsChecked); Assert.Equal(0, timeline.SelectedFrame);
             await PressF12AtEnd(main, service);
             Assert.Equal(1UL, service.Position); Assert.Single(service.Inputs);
             Assert.Equal(PadButtons.A, service.Inputs[0].Buttons);
-            Assert.True(a.IsChecked); Assert.False(b.IsChecked);
+            Assert.False(a.IsChecked); Assert.True(b.IsChecked);
+            Press(main, PhysicalKey.F11);
+            await Until(() => service.Position == 2 && next.IsEnabled);
+            Assert.Equal(ControllerState.Neutral with { Buttons = PadButtons.B, StickX = 0 }, service.Inputs[1]);
+            Assert.Equal(PadButtons.A, service.Inputs[0].Buttons);
+            use.IsChecked = false;
+            Assert.True(a.IsChecked); Assert.False(b.IsChecked); Assert.Equal(128m, axes[0].Value);
+        }
+        finally { main.CloseAfterCapture(); }
+    }
+
+    [AvaloniaFact]
+    public async Task F10SamplesLiveControllerWhenEnabledAndClearsManualInputWhenDisabled()
+    {
+        using var files = new TestWorkspace(); var backend = new FakeBackend { RecordPolls = true };
+        using var service = new ExecutionService(backend);
+        await service.LoadGameAsync(files.GamePath, files.Options); await service.NewProjectAsync();
+        var recorded = ControllerState.Neutral with { Buttons = PadButtons.Start };
+        await service.SetInputAsync(0, recorded);
+        var sample = new LiveInputSource.GamepadSample(true, new() { Buttons = GamepadButton.A, LeftX = short.MaxValue, RightTrigger = 255 });
+        var physical = new LiveInputSource(_ => Volatile.Read(ref sample));
+        var main = new MainWindow(["--layout-file", files.FilePath("layout.json")], new AppSettings { GamepadIndex = 0 }, service, physical);
+        try
+        {
+            main.ShowEditor(); main.Show(); main.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            var use = main.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "UseController");
+            var a = main.GetVisualDescendants().OfType<CheckBox>().Single(c => Equals(c.Content, "A"));
+            var axis = main.GetVisualDescendants().OfType<NumericUpDown>().Single(n => n.Name == "TasAxis0");
+            var next = main.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "NextFrame");
+            var timeline = main.GetVisualDescendants().OfType<TimelineView>().Single();
+            use.IsChecked = true;
+            Press(main, PhysicalKey.F10);
+            await Until(() => service.Position == 1 && timeline.SelectedFrame == 1 && next.IsEnabled && a.IsChecked == true && axis.Value == 255);
+            Assert.Equal(recorded, service.Inputs[0]);
+
+            var expected = ControllerState.Neutral with { Buttons = PadButtons.A | PadButtons.R, StickX = 255, TriggerR = 255 };
+            Press(main, PhysicalKey.F10);
+            await Until(() => service.Position == 2 && timeline.SelectedFrame == 2 && next.IsEnabled);
+            Assert.Equal(expected, service.Inputs[1]);
+            Assert.Equal(expected, backend.SubmittedInputs.Last());
+            Assert.All((await service.GetPollFrameAsync(1))!.Frame.Polls, poll => Assert.Equal(expected, poll.Input));
+
+            Volatile.Write(ref sample, new(true, new() { Buttons = GamepadButton.B, LeftX = short.MinValue }));
+            await Until(() => a.IsChecked == false && axis.Value == 0);
+            Press(main, PhysicalKey.F10);
+            await Until(() => service.Position == 3 && timeline.SelectedFrame == 3 && next.IsEnabled);
+            Assert.Equal(ControllerState.Neutral with { Buttons = PadButtons.B, StickX = 0 }, service.Inputs[2]);
+
+            use.IsChecked = false;
+            Press(main, PhysicalKey.F10);
+            await Until(() => service.Position == 4 && timeline.SelectedFrame == 4 && next.IsEnabled);
+            Assert.Equal(ControllerState.Neutral, service.Inputs[3]);
         }
         finally { main.CloseAfterCapture(); }
     }

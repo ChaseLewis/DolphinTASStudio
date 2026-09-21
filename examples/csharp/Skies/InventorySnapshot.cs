@@ -19,12 +19,7 @@ public readonly struct InventorySlot
     public short ItemId => BitConverter.IsLittleEndian
         ? BinaryPrimitives.ReverseEndianness(_rawItemId) : _rawItemId;
 
-    public string ItemName => ItemId switch
-    {
-        (short)SkiesGame.Electri => "Electri",
-        (short)SkiesGame.Moonberry => "Moonberry",
-        _ => $"Item {ItemId}"
-    };
+    public string ItemName => ItemNames.GetName(ItemId);
 }
 
 /// <summary>An immutable copy of the scanner's eight-slot item table at read time.</summary>
@@ -34,5 +29,7 @@ public sealed class InventorySnapshot
     public IReadOnlyList<InventorySlot> Slots { get; }
     public int ElectriCount => CountItem(SkiesGame.Electri);
     public int MoonberryCount => CountItem(SkiesGame.Moonberry);
+    public int CountItem(UsableItem item) => CountItem((int)item);
+    public int CountItem(ShipItem item) => CountItem((int)item);
     public int CountItem(int itemId) => Slots.Where(slot => slot.ItemId == itemId).Sum(slot => (int)slot.Quantity);
 }

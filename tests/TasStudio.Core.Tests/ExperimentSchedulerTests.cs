@@ -7,6 +7,36 @@ namespace TasStudio.Core.Tests;
 public sealed class ExperimentSchedulerTests
 {
     [Fact]
+    public async Task EightWorkersAreAcceptedAndRunConcurrently()
+    {
+        var definition = new ExperimentDefinition(1, "Eight workers", ExperimentStart.Boot,
+            null, null, 8, 300, [new("Trial", JsonSerializer.SerializeToElement(new { }))]);
+        definition.Validate();
+        Assert.Throws<InvalidDataException>(() => (definition with { Parallelism = 0 }).Validate());
+        Assert.Throws<InvalidDataException>(() => (definition with { Parallelism = 9 }).Validate());
+        var allEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var active = 0;
+        var visits = new int[16];
+        var run = ExperimentScheduler.RunAsync(visits.Length, definition.Parallelism, async index =>
+        {
+            var inFlight = Interlocked.Increment(ref active);
+            try
+            {
+                Assert.InRange(inFlight, 1, 8);
+                if (inFlight == 8) allEntered.TrySetResult();
+                await release.Task;
+                Interlocked.Increment(ref visits[index]);
+            }
+            finally { Interlocked.Decrement(ref active); }
+        });
+        try { await allEntered.Task.WaitAsync(TimeSpan.FromSeconds(10)); }
+        finally { release.TrySetResult(); await run; }
+        Assert.All(visits, count => Assert.Equal(1, count));
+        Assert.Equal(0, active);
+    }
+
+    [Fact]
     public async Task CancellationStopsSchedulingAndWaitsForStartedTrialsToFinishSaving()
     {
         using var cancellation = new CancellationTokenSource();

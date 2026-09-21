@@ -37,6 +37,7 @@ public sealed partial class ExecutionService
                     _allowRuntimeMismatch = true;
                 }
                 InitializeWorkspace(); _checkpointPolicy = checkpoints;
+                Interlocked.Exchange(ref _timelineOffsetMilliseconds, backup.TimelineOffsetMilliseconds);
                 // Retain the group's editable poll layout, but regenerate timing
                 // under the new settings before using these records for playback.
                 RestorePollRecords(backup.PollFrames.Select(record => record with { PrefixHash = "" }));

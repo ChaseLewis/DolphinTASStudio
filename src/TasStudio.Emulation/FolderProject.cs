@@ -5,7 +5,10 @@ using TasStudio.Core;
 namespace TasStudio.Emulation;
 
 public sealed record ProjectAsset(string Path, string Sha256);
-public sealed record TakeAsset(string Id, string Name, int Start, string BaselineHash, string Provenance, ProjectAsset[] Inputs, string? EventsHash = null);
+public sealed record TakeAsset(string Id, string Name, int Start, string BaselineHash, string Provenance, ProjectAsset[] Inputs, string? EventsHash = null)
+{
+    public ProjectAsset? Experiment { get; init; }
+}
 public sealed record StateAsset(string Id, string Name, ulong Position, string HistoryHash, ProjectAsset Data);
 public sealed record MovieData(ProjectAsset[] Inputs, ExecutionEvent[] Events, TakeAsset[] Takes, TimelineSection[] Sections)
 {
@@ -63,7 +66,17 @@ public static class FolderProject
             throw new InvalidDataException("Baseline settings do not match the project.");
         if (initial.Position != 0 || metadata.StateHash != Convert.ToHexString(SHA256.HashData(initial.Data)))
             throw new InvalidDataException("Project initial state identity does not match.");
-        var takes = movie.Takes.Select(t => new InputTake(t.Id, t.Name, t.Start, ReadInputs(root, t.Inputs), t.BaselineHash, t.Provenance) { EventsHash = t.EventsHash }).ToArray();
+        var takes = movie.Takes.Select(t => new InputTake(t.Id, t.Name, t.Start, ReadInputs(root, t.Inputs), t.BaselineHash, t.Provenance)
+        {
+            EventsHash = t.EventsHash,
+            Experiment = t.Experiment == null ? null : ReadJson<ExperimentPlay>(Resolve(root, t.Experiment))
+        }).ToArray();
+        foreach (var take in takes.Where(t => t.Experiment != null))
+        {
+            var play = take.Experiment!;
+            if (play.Start != take.Start || play.Length != take.Inputs.Length || ExperimentPlayData.Decode(play).BaselineHash != take.BaselineHash)
+                throw new InvalidDataException("Experiment take does not match its retained play.");
+        }
         if (takes.Any(t => t.Start < 0 || t.Inputs.Length == 0 || (long)t.Start + t.Inputs.Length > MaximumFrames || string.IsNullOrWhiteSpace(t.Id)) ||
             takes.Select(t => t.Id).Distinct().Count() != takes.Length ||
             movie.Sections.Any(s => s.Start < 0 || s.Length <= 0 || (long)s.Start + s.Length > inputs.Length))
@@ -91,7 +104,8 @@ public static class FolderProject
         if (!File.Exists(baselinePath)) ProjectArchive.Save(baselinePath,
             metadata with { Kind = ProjectArchive.StateKind, Position = 0, InitialPosition = 0, Inputs = [], Events = [], PollFrames = [], HistoryHash = null }, initial);
         var stateAssets = states.Select(s => new StateAsset(s.Id, s.Name, s.Position, s.HistoryHash, CopyState(root, s.Path))).ToArray();
-        var takeAssets = takes.Select(t => new TakeAsset(t.Id, t.Name, t.Start, t.BaselineHash, t.Provenance, WriteInputs(root, t.Inputs), t.EventsHash)).ToArray();
+        var takeAssets = takes.Select(t => new TakeAsset(t.Id, t.Name, t.Start, t.BaselineHash, t.Provenance, WriteInputs(root, t.Inputs), t.EventsHash)
+            { Experiment = t.Experiment == null ? null : WriteJson(root, "inputs", t.Experiment) }).ToArray();
         var movie = new MovieData(WriteInputs(root, metadata.Inputs), metadata.Events, takeAssets, sections.ToArray())
         { PollFrames = WritePollFrames(root, metadata.PollFrames) };
         var id = previous?.Id ?? Guid.NewGuid().ToString("D");

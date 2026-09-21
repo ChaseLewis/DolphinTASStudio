@@ -35,16 +35,21 @@ public sealed partial class MainWindow
 
     private bool TryMoveTimelineCursor(Window window, KeyEventArgs e)
     {
-        if (!_execution.HasProject || e.KeyModifiers != KeyModifiers.None || e.Key is not (Key.Left or Key.Right)) return false;
+        if (!_execution.HasProject || e.KeyModifiers is not (KeyModifiers.None or KeyModifiers.Shift) || e.Key is not (Key.Left or Key.Right)) return false;
         var focused = window.FocusManager?.GetFocusedElement();
         if (IsEditingText(window)) return false;
         if (focused is Visual visual && visual.GetVisualAncestors().Prepend(visual)
             .Any(control => control is Slider or MenuItem or TabItem or Avalonia.Controls.Primitives.ScrollBar)) return false;
         // Reserve mapped arrows only while authoring live controller input.
         // Historical edits still navigate, and timeline focus always navigates.
-        if (UsesControllerInput && focused is not TimelineView) return false;
+        if (_execution.IsRecordingLive || (UsesControllerInput && AuthoringNewInput && focused is not TimelineView)) return false;
         e.Handled = true;
-        if (!_busy) _timeline.MoveCursor(e.Key == Key.Left ? -1 : 1);
+        if (!_busy)
+        {
+            var direction = e.Key == Key.Left ? -1 : 1;
+            if (e.KeyModifiers == KeyModifiers.Shift) _ = Perform(() => MoveSelectedInput(direction));
+            else _timeline.MoveCursor(direction);
+        }
         return true;
     }
 

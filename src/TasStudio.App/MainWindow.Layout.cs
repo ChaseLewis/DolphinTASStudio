@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using TasStudio.Core;
@@ -15,6 +16,10 @@ public sealed partial class MainWindow
     private readonly TextBlock _playLabel = new() { Text = "Play", VerticalAlignment = VerticalAlignment.Center };
     private readonly PathIcon _playIcon = new() { Width = 17, Height = 17, Foreground = StudioTheme.Brush(ThemeColor.Icon) };
     private Button _transportPlay = null!;
+    private readonly TextBlock _recordLabel = new() { Text = "Record", VerticalAlignment = VerticalAlignment.Center };
+    private readonly PathIcon _recordIcon = new() { Width = 17, Height = 17, Foreground = StudioTheme.Brush(ThemeColor.Error) };
+    private Button _transportRecord = null!;
+    private bool _wasRecordingLive;
     private readonly TextBlock _compatibilityNotice = new()
     {
         Name = "CompatibilityNotice", IsVisible = false, TextWrapping = TextWrapping.Wrap,
@@ -30,7 +35,7 @@ public sealed partial class MainWindow
         {
             new MenuItem { Header = "_File", ItemsSource = new Control[] { ActionMenu("Play Game…    Ctrl+O", OpenGame), ActionMenu("Projects", ShowProjects), ActionMenu("New Project", NewProject), ActionMenu("Open Project / Replay…", OpenProject), ActionMenu("Recover inputs…", RecoverInputs), ActionMenu("Save Project    Ctrl+S", SaveProject, Project), ActionMenu("Save Project As…", SaveProjectAs, Project), ActionMenu("Export Replay…", ExportReplay, Project), new MenuItem { Header = "Export to Dolphin", ItemsSource = new[] { ActionMenu("Quick…", () => ExportDolphinMovie(DolphinMovieExportMode.Quick), Project), ActionMenu("Full…", () => ExportDolphinMovie(DolphinMovieExportMode.Full), Project) } } } },
             new MenuItem { Header = "_Emulation", ItemsSource = new Control[] { ActionMenu("Play / Pause", ToggleRun, Loaded), ActionMenu("Frame advance & keep input    F11", Step, Loaded), ActionMenu("Frame advance & clear    F10", StepNeutral, () => Loaded() && _execution.IsPreviewCurrent && _timeline.SelectedTake == null), ActionMenu("Play one recorded frame    F12", StepWithoutMovingSelection, () => Loaded() && _execution.HasProject && _execution.IsPreviewCurrent && _execution.Position < (ulong)_execution.Inputs.Count), ActionMenu("Pause    Escape", PausePlayback, Loaded), ActionMenu("Restart from start", RestartPlayback, Project), ActionMenu("Previous save state", PreviousState, Project), ActionMenu("Reset", Reset, Loaded), new Separator(), ActionMenu("Save State to File…", SaveStateFile, Loaded), ActionMenu("Load State from File…", LoadStateFile, Loaded), ActionMenu("Save Slot 1    Shift+F1", () => SaveSlot(1), Loaded), ActionMenu("Load Slot 1    F1", () => LoadSlot(1), Loaded) } },
-            new MenuItem { Header = "_Movie", ItemsSource = new Control[] { ActionMenu("Record live controller input", RecordLive, Project), new Separator(), ActionMenu("Undo    Ctrl+Z", _execution.UndoAsync, Project), ActionMenu("Redo    Ctrl+Y", _execution.RedoAsync, Project), ActionMenu("Copy Selection as Take", CopyTake, Project), ActionMenu("Save Named State", SaveNamedState, Project) } },
+            new MenuItem { Header = "_Movie", ItemsSource = new Control[] { ActionMenu("Record / stop live controller input", RecordLive, Project), new Separator(), ActionMenu("Undo    Ctrl+Z", _execution.UndoAsync, Project), ActionMenu("Redo    Ctrl+Y", _execution.RedoAsync, Project), ActionMenu("Copy Selection as Take", CopyTake, Project), ActionMenu("Save Named State", SaveNamedState, Project) } },
             new MenuItem { Header = "_Options", ItemsSource = new[] { ActionMenu("Controllers…", ControllerSettings), ActionMenu("Configuration…", ApplicationSettings), ActionMenu("Updates…", UpdateSettings) } },
             new MenuItem { Header = "_View", ItemsSource = BuildViewMenu() }
         } });
@@ -131,6 +136,10 @@ public sealed partial class MainWindow
         previous.Name = "PreviousState"; ToolTip.SetTip(previous, "Previous valid save state or checkpoint; project start if none remains"); transport.Children.Add(previous);
         _transportPlay = TransportButton("Play", "play-only", ToggleRun, () => _execution.HasProject && (_execution.IsRunning || _execution.Position < (ulong)_execution.Inputs.Count));
         _transportPlay.Name = "TimelinePlay"; _playIcon.Data = Geometry.Parse(ToolIcons.Paths["play-only"]); _transportPlay.Content = Row(_playIcon, _playLabel); transport.Children.Add(_transportPlay);
+        _transportRecord = TransportButton("Record", "record", RecordLive, () => _execution.HasProject);
+        _transportRecord.Name = "TimelineRecord"; _recordIcon.Data = Geometry.Parse(ToolIcons.Paths["record"]);
+        _transportRecord.Content = Row(_recordIcon, _recordLabel); transport.Children.Add(_transportRecord);
+        ToolTip.SetTip(_transportRecord, "Play in real time and record the controller at the timeline end. Existing input plays unchanged. Click again or press Escape to stop.");
         var seek = TransportButton("Seek", "seek", () => SeekTo((ulong)_timeline.SelectedFrame),
             () => _execution.HasProject && _timeline.SelectedFrame <= _execution.Inputs.Count && (!_execution.IsPreviewCurrent || _execution.Position != (ulong)_timeline.SelectedFrame));
         seek.Name = "SeekSelection"; ToolTip.SetTip(seek, "Seek the game preview to the start of the timeline selection");
@@ -140,7 +149,13 @@ public sealed partial class MainWindow
         header.Children.Add(transport); Grid.SetColumn(_timelinePreview, 1); header.Children.Add(_timelinePreview); panel.Children.Add(header);
         _cancelSeek.Click += async (_, _) => { if (_seeking) { _cancelSeek.IsEnabled = false; await _execution.PauseAsync(); } };
         _timeline.SelectionChanged += LoadSelectedInput;
+        _timeline.MoveSelectionRequested += async delta => await Perform(() => MoveSelectedInput(delta));
         _timeline.TagRequested += async position => await Perform(() => EditTimelineTag(null, position));
+        _timeline.KeyDown += async (_, e) =>
+        {
+            if (e.Handled || e.Key != Key.Delete || _timeline.SelectedTake == null) return;
+            e.Handled = true; await Perform(DeleteTake);
+        };
         var scroll = new ScrollViewer { Content = _timeline, VerticalContentAlignment = VerticalAlignment.Top, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
         Grid.SetRow(scroll, 1); panel.Children.Add(scroll);
         int ClearFrom(bool context) => context ? _timeline.ContextFrame ?? -1 : _timeline.SelectedFrame;
@@ -148,18 +163,23 @@ public sealed partial class MainWindow
             ActionMenu("Undo    Ctrl+Z", _execution.UndoAsync, () => _execution.HasProject),
             ActionMenu("Redo    Ctrl+Y", _execution.RedoAsync, () => _execution.HasProject), new Separator(),
             ActionMenu("Copy selection as take", CopyTake, HasInputSelection),
+            ActionMenu("Move selection left    Shift+Left", () => MoveSelectedInput(-1), () => CanMoveSelectedInput(-1)),
+            ActionMenu("Move selection right    Shift+Right", () => MoveSelectedInput(1), () => CanMoveSelectedInput(1)),
             ActionMenu("Clear selected input", ClearSelectedInput, CanClearSelectedInput),
             ActionMenu("Clear later input", () => ClearLaterInput(ClearFrom(context)),
                 () => _execution.HasProject && (context || _timeline.SelectedTake == null) && ClearFrom(context) >= 0 && ClearFrom(context) < _execution.Inputs.Count - 1),
-            ActionMenu("Use selected section", UseTake, () => HasInputSelection() && _timeline.SelectedTake != null),
+            ActionMenu("Delete take", () => DeleteTake(context ? _timeline.ContextTake : _timeline.SelectedTake),
+                () => _execution.HasProject && (context ? _timeline.ContextTake : _timeline.SelectedTake) != null),
+            ActionMenu("Use selected section", UseTake, () => CanClearSelectedInput() && _timeline.SelectedTake != null && _timeline.SelectedFrame <= _execution.Inputs.Count),
             TakeAtCursorMenu(),
-            ActionMenu("Audition take", AuditionTake, () => HasInputSelection() && _timeline.SelectedTake != null), new Separator(),
+            ActionMenu("Audition take", AuditionTake, () => CanClearSelectedInput() && _timeline.SelectedTake != null), new Separator(),
             ActionMenu("Load selected state", LoadSelectedMarker, () => _timeline.SelectedMarker is { Valid: true }),
             ActionMenu("Clear selected state", ClearSelectedMarker, () => _timeline.SelectedMarker != null),
             new MenuItem { Header = "Experiment", Name = "StateExperimentMenu", IsVisible = false },
             new Separator(),
             ActionMenu("Rename tag…", () => EditTimelineTag(_timeline.SelectedTag, _timeline.SelectedTag!.Position), () => _timeline.SelectedTag != null),
             ActionMenu("Remove tag", () => _execution.RemoveTagAsync(_timeline.SelectedTag!.Id), () => _timeline.SelectedTag != null),
+            ActionMenu("Timeline settings…", TimelineSettings, () => _execution.HasProject),
             ActionMenu("Checkpoint settings…", CheckpointSettings, () => _execution.HasProject)
         ];
         ContextMenu CreateEditMenu(bool context = false)
@@ -210,7 +230,7 @@ public sealed partial class MainWindow
         var zoom = new StackPanel { Orientation = Orientation.Horizontal };
         zoom.Children.Add(ActionButton("−", () => ZoomTimeline(1.5))); zoom.Children.Add(ActionButton("+", () => ZoomTimeline(.67)));
         Grid.SetColumn(zoom, 2); actions.Children.Add(zoom);
-        ToolTip.SetTip(scroll, "Click selects inputs. Drag selects a range. Middle-click adds a visual tag. Wheel pans; Ctrl+wheel zooms. Right-click a tag to rename or remove it.");
+        ToolTip.SetTip(scroll, "Drag selects a range; drag inside a selected range to move it (Shift+drag also moves a single group). Shift+Left/Right moves one group. Moves replace destination inputs and leave neutral inputs behind; Ctrl+Z undoes. Middle-click adds a tag. Wheel pans; Ctrl+wheel zooms.");
         Grid.SetRow(actions, 2); panel.Children.Add(actions); return panel;
     }
     private bool HasInputSelection() => _execution.HasProject && _timeline.SelectedFrame < _execution.Inputs.Count;
@@ -222,6 +242,27 @@ public sealed partial class MainWindow
         var start = take?.Start ?? 0;
         var end = take == null ? _execution.Inputs.Count : start + take.Inputs.Length;
         return _timeline.SelectedFrame >= start && _timeline.SelectionEnd > _timeline.SelectedFrame && _timeline.SelectionEnd <= end;
+    }
+    private int SelectionMoveDelta(int delta)
+    {
+        if (!CanClearSelectedInput()) return 0;
+        var take = _execution.Takes.FirstOrDefault(t => t.Id == _timeline.SelectedTake);
+        var first = take?.Start ?? 0;
+        var end = take == null ? int.MaxValue : first + take.Inputs.Length;
+        return Math.Clamp(delta, first - _timeline.SelectedFrame, end - _timeline.SelectionEnd);
+    }
+    private bool CanMoveSelectedInput(int delta) => SelectionMoveDelta(delta) != 0;
+    private async Task MoveSelectedInput(int delta)
+    {
+        delta = SelectionMoveDelta(delta);
+        if (delta == 0) return;
+        var start = _timeline.SelectedFrame; var end = _timeline.SelectionEnd; var take = _timeline.SelectedTake;
+        await FlushInputEditsAsync(); await PausePlayback();
+        await _execution.MoveInputRangeAsync(start, end - start, take, start + delta);
+        _timeline.InputCount = _execution.Inputs.Count;
+        _timeline.SetSelection(start + delta, end + delta, take);
+        _timeline.RevealSelection();
+        LoadSelectedInput();
     }
     private async Task ClearSelectedInput()
     {
@@ -262,6 +303,13 @@ public sealed partial class MainWindow
         _ = RefreshExperimentMarkerColors();
         _timelinePreview.Text = $"{(_execution.IsRecordingLive ? "REC · " : "")}{PlaybackPositionText}";
         _timelinePreview.Foreground = _execution.IsRecordingLive ? StudioTheme.Brush(ThemeColor.Error) : StudioTheme.Brush(ThemeColor.Text);
+        var recording = _execution.IsRecordingLive;
+        if (_recordLabel.Text != (recording ? "Stop" : "Record"))
+        {
+            _recordLabel.Text = recording ? "Stop" : "Record";
+            _recordIcon.Data = Geometry.Parse(ToolIcons.Paths[recording ? "stop" : "record"]);
+            Avalonia.Automation.AutomationProperties.SetName(_transportRecord, recording ? "Stop recording" : "Record");
+        }
         var playing = _execution.IsRunning;
         if (_playLabel.Text != (playing ? "Pause" : "Play"))
         {
@@ -273,12 +321,28 @@ public sealed partial class MainWindow
         _timeline.Inputs = _execution.Inputs;
         _timeline.InputCount = _timeline.Inputs.Count; _timeline.Position = _execution.Position; _timeline.Current = _execution.IsPreviewCurrent;
         _timeline.PollBoundaries = _execution.PollBoundaries;
+        if (recording || _wasRecordingLive)
+        {
+            var position = checked((int)_timeline.Position);
+            if (_timeline.SelectedFrame != position || _timeline.SelectionEnd != position + 1 || _timeline.SelectedTake != null)
+                _timeline.SetSelection(position, position + 1);
+        }
+        _wasRecordingLive = recording;
         if (previewMoved) _timeline.RevealPosition();
         _timeline.Takes = _execution.Takes; _timeline.Sections = _execution.Sections; _timeline.Markers = _execution.StateMarkers;
         _timeline.Tags = _execution.Tags;
         _timeline.RefreshMarker(); _timeline.Update();
     }
     private async Task CopyTake() { await _execution.CaptureTakeAsync("Take " + (_execution.Takes.Count + 1), _timeline.SelectedFrame, _timeline.SelectionEnd - _timeline.SelectedFrame); }
+    private Task DeleteTake() => DeleteTake(_timeline.SelectedTake);
+    private async Task DeleteTake(string? id)
+    {
+        var take = _execution.Takes.FirstOrDefault(t => t.Id == id);
+        if (take == null) return;
+        await _execution.RemoveTakeAsync(take.Id);
+        if (_timeline.SelectedTake == id) _timeline.SetSelection(take.Start, take.Start + 1);
+        LoadSelectedInput();
+    }
     private MenuItem TakeAtCursorMenu()
     {
         var item = new MenuItem { Header = "Apply take at cursor", Name = "ApplyTakeAtCursor" };
@@ -299,6 +363,7 @@ public sealed partial class MainWindow
         var take = _timeline.SelectedTake!; var start = _timeline.SelectedFrame; var end = _timeline.SelectionEnd;
         await FlushInputEditsAsync();
         await _execution.UseTakeAsync(take, start, end - start, removeTake: true);
+        _timeline.InputCount = _execution.Inputs.Count;
         _timeline.SetSelection(start, end);
         LoadSelectedInput();
     }
@@ -331,6 +396,7 @@ internal static class ToolIcons
 {
     public static readonly IReadOnlyDictionary<string, string> Paths = new Dictionary<string, string>
     {
+        ["record"] = "M12,3 A9,9 0 1 1 12,21 A9,9 0 1 1 12,3 Z",
         ["play-only"] = "M5,2 L22,12 5,22 Z", ["pause"] = "M5,3 L10,3 10,21 5,21 Z M14,3 L19,3 19,21 14,21 Z",
         ["restart"] = "M2,3 L5,3 5,21 2,21 Z M14,3 L5,12 14,21 Z M23,3 L14,12 23,21 Z",
         ["previous-state"] = "M10,3 L10,9 20,9 20,20 17,20 17,12 10,12 10,18 1,10 Z",
