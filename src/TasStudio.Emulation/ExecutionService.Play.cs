@@ -4,6 +4,7 @@ public sealed partial class ExecutionService
 {
     public Task LoadPlayGameAsync(string path, BackendOptions options, string? statePath = null) => Enqueue(() =>
     {
+        RequireNoTakeOver();
         Pause();
         var source = statePath == null ? null : ProjectArchive.Load(statePath, ProjectArchive.StateKind);
         if (source != null)
@@ -19,7 +20,7 @@ public sealed partial class ExecutionService
         try
         {
             LoadGame(path, options);
-            if (source != null) { ValidateCompatibility(source.Metadata); _backend.Restore(source.InitialState); }
+            if (source != null) { ValidateCompatibility(source.Metadata); RestoreBackend(source.InitialState); }
             succeeded = true;
         }
         catch
@@ -42,6 +43,7 @@ public sealed partial class ExecutionService
     public Task ExportPlayMemoryCardAsync(string region, string destination) => Enqueue(() =>
     {
         RequireManualPlay(); Pause();
+        if (_options!.Configuration?.UseGciFolder == true) throw new InvalidOperationException("This session uses a GCI folder. Its individual save files are already available in " + _options.GciDirectory);
         var source = PlayMemoryCards.CardPath(_options!, region);
         var target = Path.GetFullPath(destination);
         if (Path.GetFullPath(source).Equals(target, StringComparison.OrdinalIgnoreCase))
@@ -54,13 +56,35 @@ public sealed partial class ExecutionService
     });
 
     /// <summary>Import a copy and reboot. Keep the replaced card as a backup; never edit the source file.</summary>
-    public Task ImportPlayMemoryCardAsync(string region, string source) => Enqueue(() =>
+    public Task<int> ImportPlayMemoryCardFolderAsync(string region, string folder) => Enqueue(() =>
+    {
+        RequireManualPlay(); Pause();
+        if (!PlayMemoryCards.Regions.Contains(region)) throw new ArgumentException("Select USA, EUR or JAP.", nameof(region));
+        if (_backend is not IGameCubeMemoryCardBackend importer) throw new NotSupportedException("This backend does not support GCI folder import.");
+        var saves = Directory.EnumerateFiles(Path.GetFullPath(folder)).Where(path => Path.GetExtension(path).Equals(".gci", StringComparison.OrdinalIgnoreCase))
+            .Take(128).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (saves.Length == 0) throw new InvalidDataException("This folder contains no .gci saves. Select the Card A folder for your game's region.");
+        if (saves.Length > 127) throw new InvalidDataException("A GameCube card can contain at most 127 saves. Choose a folder with fewer saves.");
+        var temporary = Path.Combine(_options!.SaveDirectory, "Imports", Guid.NewGuid().ToString("N") + ".raw");
+        Directory.CreateDirectory(Path.GetDirectoryName(temporary)!);
+        try
+        {
+            importer.CreateMemoryCard(saves, temporary, region == "JAP");
+            ImportPlayMemoryCard(region, temporary);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        Notify($"Imported {saves.Length} GCI save copies and restarted Play — paused");
+        return saves.Length;
+    });
+
+    public Task ImportPlayMemoryCardAsync(string region, string source) => Enqueue(() => ImportPlayMemoryCard(region, source));
+    private void ImportPlayMemoryCard(string region, string source)
     {
         RequireManualPlay(); Pause();
         if (new FileInfo(source).Length > 16 * 1024 * 1024) throw new InvalidDataException("Memory card is too large.");
         var bytes = File.ReadAllBytes(source);
         var size = PlayMemoryCards.ValidateRawCard(bytes, region);
-        var options = _options! with { Configuration = (_options!.Configuration ?? EmulationConfiguration.FromLegacy(_options.InternalResolution, _options.DspHle)) with { MemoryCardSizeOverride = size } };
+        var options = _options! with { Configuration = (_options!.Configuration ?? EmulationConfiguration.FromLegacy(_options.InternalResolution, _options.DspHle)) with { MemoryCardSizeOverride = size, UseGciFolder = false } };
         var target = PlayMemoryCards.CardPath(options, region);
         if (Path.GetFullPath(source).Equals(Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
             throw new IOException("Choose a card outside the active memory card location.");
@@ -90,5 +114,5 @@ public sealed partial class ExecutionService
             throw;
         }
         Notify("Imported memory card copy and restarted Play — paused");
-    });
+    }
 }

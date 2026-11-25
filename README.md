@@ -38,7 +38,7 @@ BIOS files, save data, or game-derived trace captures are included.
 | Input editor | Interactive sticks, numeric axes, trigger pressure, controller input, alternating-frame turbo |
 | Timeline | Poll-based ruler, frame-group selections, alternative takes, visual tags, seek, undo/redo |
 | Projects | ROM identity/relocation, editable settings and start UTC, disk-backed states/checkpoints, saves and recovery |
-| Play mode | Direct keyboard/XInput play, persistent Slot A memory cards, raw card import/export, independent save-state files |
+| Play mode | Direct keyboard/XInput play, persistent Slot A cards, raw card and GCI folder import, start TAS from current Play |
 | Memory watcher | Grouped watches, typed display, pointer offsets, double-click editing, Dolphin Memory Engine `.dmw` import |
 | Experiments | C# class libraries, pre-boot initialization, immutable original movie, up to four isolated workers |
 | Results | Per-experiment typed SQLite columns, JSONB nested values, serialized writes, batch resume, failed-trial diagnostics |
@@ -182,8 +182,7 @@ Creating or opening a TAS project switches back to the editor.
 
 Save normally **inside the game** to use the persistent raw memory card in **Slot A**.
 Play uses its own profile under the app's data folder at `Play/DolphinUser/User/GC/`;
-TAS projects and experiment workers use isolated profiles. Slot B and individual
-`.gci` save import are not exposed in this workflow.
+TAS projects and experiment workers use isolated profiles. Slot B is empty.
 
 **Memory cards…** lets you choose USA, EUR or JAP and import/export a `.raw` card
 (59, 123, 251, 507, 1019 or 2043 blocks). Import copies the selected file and restarts
@@ -191,6 +190,49 @@ the game; any replaced card is retained alongside it as a uniquely named `.bak`.
 Export flushes Dolphin's card writer, copies the card, and restores your paused
 position. Cards are separate by region and size. Match the region to your game.
 The dialog shows the active file path; an unused region may have no card to export.
+
+**Import GCI folder…** accepts stock Dolphin's `GC/USA/Card A` (or EUR/JAP) folder.
+It copies the `.gci` saves into a new raw card using Dolphin's save importer and
+restarts Play. Source saves are unchanged; future in-game saves go to Studio's
+Play card. A replaced card is backed up. Folders with duplicate in-game save
+identities, corrupt files, or more than a card can hold are rejected.
+
+For a live card owned by a project, use **Options → Project memory card…**.
+Choose **Open GCI folder**, copy saves directly into the project's `gci/` folder,
+then **Restart from GCI folder**. Dolphin reads the folder at game start and writes
+in-game saves back there. Restart preserves timeline inputs but replaces the starting
+state and removes old state markers. New power-on projects use this folder by default;
+older/raw-state projects switch when you use that restart button.
+
+States embed all loaded GCI saves. Seeking rewinds the card, and experiment workers
+restore private copies. Moving the project or using Save As changes the destination
+folder correctly. Adding/replacing GCI files requires the explicit restart, since
+ordinary project reopening restores its saved timeline and card. Dolphin movie
+export currently supports raw-card projects only.
+
+To reclaim experiment storage, use **Experiments → Clean experiment storage…**.
+The scan shows an increasing file/byte count and a breakdown of the entire
+experiments folder, including archives, fixtures and detached/deleted experiments.
+**Clean experiments** removes old states, worker profiles and BMP screenshots,
+then losslessly compresses retained input JSON. It shows progress and space freed,
+and can be stopped. Main-project assets, experiment baselines and recipe start
+states remain protected; active runs are skipped. Results, top plays, logs and
+code remain. Removed state markers disappear; cleaned batches cannot resume.
+
+New input/poll/take assets and experiment result receipts use gzip by default.
+Studio and the worker load both plain JSON and `.json.gz` automatically. Use
+the updated Studio/worker when opening projects with compressed input assets.
+
+To go straight from a stock Dolphin save to experiments:
+
+1. Open the game in **Play**, choose **Memory cards… → Import GCI folder…**, and
+   select the region and `Card A` folder.
+2. Play and load the desired save through the game's menu.
+3. Click **Start TAS here…**, name the project, and create it with **Current Play
+   position** selected. The new project starts at group zero with the exact game
+   state, settings, and card contents, in a separate writable profile.
+4. Create an experiment from the project start or a named state. The project
+   embeds the baseline, so it does not depend on the original Dolphin folder.
 
 A **save state includes the memory card contents**. Loading an older state also
 rewinds that card, which will then persist to disk. Export the card first if you
@@ -228,7 +270,53 @@ Opening a saved project automatically restores/seeks to its saved position. If t
 ROM cannot be found, Studio asks you to locate the matching image. The project
 references the ROM; it does not embed it.
 
+### Movie Mode and controller capture
+
+Open a TAS project, then choose **Movie → Watch movie from start** or **Watch movie
+from here**. Movie Mode plays recorded inputs without accepting live controller
+input or enabling editing. It pauses at the recorded end; Play starts again from
+the beginning. Use the slider and **Seek** to replay to a frame group, or **Frame
+advance** / **F12** to advance one recorded group. **Space** toggles playback.
+**Escape** cancels a seek, leaves game fullscreen, or returns to the editor.
+
+**Render resolution (experimental)** selects **Project default** or **1×–4× native**
+for the current Movie Mode session. Changes appear on the next advanced frame,
+without rebooting or changing the project's saved configuration. Returning to the
+editor restores the project resolution. Existing save states remain available for
+seeking; automatic checkpoints are suspended while an override is selected.
+Higher resolutions cost performance and may affect playback in some games;
+recorded poll/timing desync checks remain active.
+
+**Game** and **Controller Inputs** use the same docking system as the TAS editor.
+Drag their tabs to dock, tab together, or float them independently. **View → Float
+Game / Float Controller Inputs** opens separate windows with stable titles for
+capture and composition in OBS. Closing either panel only hides it; reopen it
+from **View** or the Movie Mode toolbar. Movie and editing layouts are saved
+separately, including floating window positions. Returning to the editor restores
+its layout, timeline selection, and scroll position.
+
+The controller panel is also available from **View → Controller Inputs** while
+editing. Its red stick dots, buttons, and analog trigger meters follow the last
+controller poll in the displayed frame group, not the timeline selection or a
+connected physical pad. Groups with no polls retain the previous polled input;
+the project baseline has no known input and displays neutral controls. Pausing
+keeps the displayed input. Right-click the controller to show exact values or
+choose a theme, black, white, or chroma-key background. Values are hidden by
+default for clean capture. Analog L/R pressure and their digital clicks are
+displayed separately.
+
+Command-line playback: `TasStudio.App --project "path/to/project.tasproj" --movie`.
+The existing `--autoplay` option now uses recorded playback when opening a project.
+
 ### Selection, execution, and timing
+
+**Take Over** on the toolbar plays from the current TAS preview using your keyboard
+or controller without recording. To start at a different point, right-click the
+active timeline and choose **Take over from here**. **Ctrl+P** pauses or resumes;
+**Alt+Enter** toggles fullscreen. **Return to TAS** or **Escape** discards that play
+and restores the exact takeover position, paused, with the editor layout and
+selection intact. You can play beyond the recorded end without extending the TAS.
+The temporary return snapshot stays in memory; takeover creates no save-state files.
 
 The **cursor** selects input for inspection/editing. The **preview** is the emulator's
 current position. Selecting a timeline position or tag moves the cursor without
@@ -263,8 +351,56 @@ with media-first function keys may require Fn.
 button to toggle turbo: `+` means pressed on this group, `−` means released.
 Middle-click the timeline to add a visual tag. Right-click state/checkpoint markers
 to load or clear them. Clear later input preserves the selected group and visual tags.
+Use the compact **Find tag…** box to search tag names; results include frame groups.
+Click a result or use **Enter / Shift+Enter** to cycle forward/backward through matches.
+Search selects and reveals the tag without seeking the game; use **Seek** to update
+the preview. **Ctrl+F** focuses search from the timeline; **Escape** clears it.
+
+**+ Take** / **Copy selection as take** asks for a name, with the numbered name as
+the default. Right-click a take and choose **Rename take…**, or select it and press
+**F2** while the timeline has focus. Renames support undo/redo and are saved with
+the project. F2 keeps its save-slot shortcut outside that context.
+
+Experiment menus, run windows, top plays, and newly imported takes use the experiment's
+name saved by Create/Rename experiment in `experiment.identity.json`, or its folder
+name when no identity is saved. Run config fields, including `Name` and `DisplayName`,
+cannot rename the experiment. The config's `Name` describes a batch and can change for each run.
+The Top plays batch dropdown shows those batch names, sorted by last updated time
+descending (newest first). Refresh updates the order and keeps the selected batch.
+Run identifiers and trial names/scores are secondary details. Hover the selected take's label in
+the input panel to see its source trial and score.
+
 Applying a take at the cursor replaces input starting there without shifting later
 input; it removes the applied take, and Undo restores both.
+
+With the timeline focused, **Ctrl+C** copies the selected input groups from either
+Active playback or a take. Select a destination in another lane and **Ctrl+V**
+pastes at the cursor, replacing the same number of groups without shifting later
+inputs. Paste must fit inside a destination take; Active playback can extend at
+its end. Copying preserves the source, and paste supports undo/redo. **+ Take**
+also copies from the selected lane.
+
+Select a take and **Mark active** to include it in a trial. Multiple takes can be
+active: the highest active take in the timeline supplies inputs wherever it has
+them, including neutral inputs. Lower active takes fill uncovered ranges, then
+Active playback fills the remaining gaps. Right-click a take to move it up or down
+to change priority. **Trial takes** plays this combination from the earliest active
+take; **Stop trial** or **Escape** stops it. The original recording, poll timing,
+and saved states are preserved. **Apply takes** commits the same combination as
+one undoable edit, keeps the takes, and clears their active marks. Active marks
+and priority order are saved with the project. Normal Play still uses Active playback.
+
+Editing, pasting, moving, clearing, or applying inputs more than one minute behind
+the game preview asks for confirmation before overwriting. The check uses recorded
+video fields rather than assuming every input group lasts one frame.
+
+Selecting two or more frame groups shows their duration over the tags section. In
+**Configuration → Timeline → Timing display**, choose **Multiple Only** (default),
+**Always** to include single-group selections, or **Never** to hide the readout.
+This preference is saved for all projects on this computer. Drag either selection edge to
+resize the range, and hover the duration for start/end timestamps using the timeline
+time offset. Measuring a selection does not move playback or edit inputs. A `≈`
+marks estimates for unrecorded or changed input and alternative takes.
 
 Drag across the timeline to select a range, then drag inside that selection to move
 it. **Shift+drag** also moves a single selected group. The destination outline previews
@@ -310,7 +446,8 @@ See [input/recovery behavior](docs/input-workflow-and-recovery.md),
 Right-click a saved state in the timeline and choose **Experiment → Create
 experiment…** to name and scaffold a C# workspace under the project's `experiments/`
 folder, initialized to start at that state. The same menu offers **Rename experiment…**
-and **Remove experiment**; removal preserves code and old runs for recovery.
+and **Remove experiment from state**; removal clears only the state attachment.
+The experiment stays in the project and in **Attach existing experiment**, with its code and run history.
 Edit its code/config, then use the
 state menu to run it or open its folder. **Attach existing experiment** reuses a
 recipe at a replacement state after redoing a section; previous runs keep their
@@ -407,7 +544,12 @@ stops scheduling; unstarted indices remain pending without synthetic results.
 
 Successful/cancelled trial directories are cleaned after commit and worker exit.
 Failed/timed-out trials retain diagnostics. A failed database write preserves files
-for recovery. Keep the batch's SQLite database and shared source/assembly snapshots.
+for recovery. Each batch starts fresh and automatically removes its temporary source
+snapshots, trial states, profiles and result projects when it exits, including cancellation.
+SQLite results, top plays, logs and compiled scripts remain. Resume is available only
+for interrupted batches whose snapshots have not been cleaned; otherwise start a new batch.
+Use `clean-batch <batch> --dry-run` to preview cleanup of an older stopped batch,
+then omit `--dry-run` to reclaim its temporary storage.
 Successful trials do not automatically leave a replay project to open in Studio.
 
 For the complete configuration, API, takeover semantics, memory utilities, state

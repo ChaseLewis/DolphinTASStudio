@@ -13,6 +13,8 @@ public sealed record EmulationConfiguration
     // Omitted for the original 2043-block card, preserving existing fingerprints.
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? MemoryCardSizeOverride { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UseGciFolder { get; init; }
     public SortedDictionary<string, string> Options { get; init; } = new(StringComparer.Ordinal);
     private static CoreSetting Toggle(string key, string label, string group, bool value) =>
         new("dolphin_" + key, label, group, value ? "enabled" : "disabled", ["disabled", "enabled"], ["Off", "On"]);

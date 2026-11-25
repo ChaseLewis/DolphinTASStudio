@@ -38,17 +38,18 @@ public sealed partial class ExecutionService
     private double _lastCheckpointAttempt = double.NaN;
     private bool _preserveCheckpointFiles;
     private sealed record Edit(ControllerState[] Inputs, ExecutionEvent[] Events, TimelineSection[] Sections, InputTake[] Takes)
-    { public RecordedInputFrame[] PollFrames { get; init; } = []; }
+    { public RecordedInputFrame[] PollFrames { get; init; } = []; public bool RebuildPreview { get; init; } }
     private readonly List<Edit> _undo = [], _redo = [];
-    private InputTake[] _publishedTakes = [];
-    private TimelineSection[] _publishedSections = [];
-    private StateMarker[] _publishedMarkers = [];
+    private IReadOnlyList<InputTake> _publishedTakes = [];
+    private InputTake[] _publishedTakeSources = [];
+    private IReadOnlyList<TimelineSection> _publishedSections = [];
+    private IReadOnlyList<StateMarker> _publishedMarkers = [];
     public CheckpointPolicy Checkpoints => Volatile.Read(ref _checkpointPolicy);
     public bool IsPreviewCurrent => _publishedCurrent;
     public long Revision => Interlocked.Read(ref _revision);
-    public IReadOnlyList<InputTake> Takes => Array.AsReadOnly(Volatile.Read(ref _publishedTakes));
-    public IReadOnlyList<TimelineSection> Sections => Array.AsReadOnly(Volatile.Read(ref _publishedSections));
-    public IReadOnlyList<StateMarker> StateMarkers => Array.AsReadOnly(Volatile.Read(ref _publishedMarkers));
+    public IReadOnlyList<InputTake> Takes => Volatile.Read(ref _publishedTakes);
+    public IReadOnlyList<TimelineSection> Sections => Volatile.Read(ref _publishedSections);
+    public IReadOnlyList<StateMarker> StateMarkers => Volatile.Read(ref _publishedMarkers);
 
     private void InitializeWorkspace()
     {
@@ -67,16 +68,17 @@ public sealed partial class ExecutionService
     {
         Interlocked.Exchange(ref _timelineOffsetMilliseconds, 0);
         _history = null; _executedHistory = null; _takes.Clear(); _sections.Clear(); _tags.Clear(); ClearNamedStates();
-        _pollFrames.Clear(); Volatile.Write(ref _publishedPollBoundaries, [0]);
+        _pollFrames.Clear(); InvalidateTimeline(0);
+        Volatile.Write(ref _publishedPollBoundaries, PollBoundarySnapshot.Empty);
         ClearAutomaticCheckpoints(); _checkpointPolicy = new(); _undo.Clear(); _redo.Clear(); _publishedCurrent = true;
         Interlocked.Increment(ref _revision);
     }
-    private bool Current() => !_hasProject || (_backend.Position <= (ulong)_inputs.Count && _executedHistory == _history!.At(_backend.Position));
+    private bool Current() => _takingOver || !_hasProject || (_backend.Position <= (ulong)_inputs.Count && _executedHistory == _history!.At(_backend.Position));
     private void EnsureCurrent() { if (!Current()) Seek(_backend.Position); }
-    private void HistoryChanged(int index) { RewritePollInputs(); _history!.Invalidate(index); PruneInvalidStates(); Interlocked.Increment(ref _revision); }
-    private void RememberEdit()
+    private void HistoryChanged(int index) { InvalidateTimeline(index); RewritePollInputs(index); _history!.Invalidate(index); PruneInvalidStates(); Interlocked.Increment(ref _revision); }
+    private void RememberEdit(bool rebuildPreview = false)
     {
-        _undo.Add(new(_inputs.ToArray(), _events.ToArray(), _sections.ToArray(), _takes.ToArray()) { PollFrames = PollRecords() }); _redo.Clear();
+        _undo.Add(new(_inputs.ToArray(), _events.ToArray(), _sections.ToArray(), _takes.ToArray()) { PollFrames = PollRecords(), RebuildPreview = rebuildPreview }); _redo.Clear();
         while (_undo.Count > MaximumUndoEntries || (_undo.Count > 1 && _undo.Sum(e => (long)e.Inputs.Length * 8) > MaximumUndoBytes)) _undo.RemoveAt(0);
     }
     public Task UndoAsync() => Enqueue(() => ChangeHistory(_undo, _redo));
@@ -104,18 +106,38 @@ public sealed partial class ExecutionService
         List<Edit> to)
     {
         RequireProject(); Pause(); if (from.Count == 0) return;
+        using var timing = PerfLog.Time("edit.undo-redo", _inputs.Count);
         var edit = from[^1]; from.RemoveAt(from.Count - 1);
-        to.Add(new(_inputs.ToArray(), _events.ToArray(), _sections.ToArray(), _takes.ToArray()) { PollFrames = PollRecords() });
+        to.Add(new(_inputs.ToArray(), _events.ToArray(), _sections.ToArray(), _takes.ToArray()) { PollFrames = PollRecords(), RebuildPreview = edit.RebuildPreview });
         _inputs.Clear(); _inputs.AddRange(edit.Inputs); _events.Clear(); _events.AddRange(edit.Events);
         RestorePollRecords(edit.PollFrames);
         _sections.Clear(); _sections.AddRange(edit.Sections); _takes.Clear(); _takes.AddRange(edit.Takes); HistoryChanged(0);
-        if (_backend.Position > (ulong)_inputs.Count) Seek((ulong)_inputs.Count);
+        if (edit.RebuildPreview || _backend.Position > (ulong)_inputs.Count)
+        {
+            _executedHistory = null;
+            Seek(Math.Min(_backend.Position, (ulong)_inputs.Count));
+        }
         Notify("Timeline history updated");
     }
-    public Task<string> CaptureTakeAsync(string name, int start, int length) => Enqueue(() =>
+    public Task<string> CaptureTakeAsync(string name, int start, int length, string? sourceTakeId = null) => Enqueue(() =>
     {
-        RequireProject(); ValidateRange(start, length, _inputs.Count);
-        return AddTake(name, start, _inputs.Skip(start).Take(length).ToArray(), "Manual copy");
+        RequireProject();
+        var take = sourceTakeId == null ? null : _takes.Single(t => t.Id == sourceTakeId);
+        var source = take?.Inputs ?? _inputs.ToArray(); var offset = start - (take?.Start ?? 0);
+        ValidateRange(offset, length, source.Length);
+        return AddTake(name, start, source.AsSpan(offset, length).ToArray(), "Manual copy");
+    });
+    public Task RenameTakeAsync(string id, string name) => Enqueue(() =>
+    {
+        RequireProject();
+        name = name.Trim();
+        if (name.Length is < 1 or > 80 || name.Any(char.IsControl))
+            throw new ArgumentException("Take names must contain 1–80 characters on one line.", nameof(name));
+        var index = _takes.FindIndex(t => t.Id == id);
+        if (index < 0) throw new InvalidOperationException("Take was removed.");
+        if (_takes[index].Name == name) return;
+        RememberEdit(); _takes[index] = _takes[index] with { Name = name };
+        Interlocked.Increment(ref _revision); Notify("Take renamed");
     });
     public Task RemoveTakeAsync(string id) => Enqueue(() =>
     {
@@ -147,7 +169,7 @@ public sealed partial class ExecutionService
     private string AddTake(string name, int start, ControllerState[] inputs, string provenance)
     {
         RememberEdit(); var id = Guid.NewGuid().ToString("N");
-        _takes.Add(new(id, string.IsNullOrWhiteSpace(name) ? "Take " + (_takes.Count + 1) : name.Trim(), start, inputs, _history!.At((ulong)start), provenance) { EventsHash = EventsHash(start, inputs.Length) });
+        _takes.Add(new(id, string.IsNullOrWhiteSpace(name) ? "Take " + (_takes.Count + 1) : name.Trim(), start, inputs, _history!.At((ulong)Math.Min(start, _inputs.Count)), provenance) { EventsHash = EventsHash(start, inputs.Length) });
         Interlocked.Increment(ref _revision); Notify("Candidate added; active playback unchanged"); return id;
     }
     public Task SetTakeInputAsync(string id, int frame, ControllerState input) => Enqueue(() =>
@@ -162,6 +184,7 @@ public sealed partial class ExecutionService
     public Task EditRangeAsync(int start, int length, string? takeId, ControllerState value, PadButtons changedButtons, int changedAxes) => Enqueue(() =>
     {
         RequireProject(); Pause();
+        using var timing = PerfLog.Time("edit.range", _inputs.Count);
         var takeIndex = takeId == null ? -1 : _takes.FindIndex(t => t.Id == takeId);
         value.Validate();
         if (takeId != null && takeIndex < 0) throw new InvalidOperationException("Take was removed.");
@@ -175,19 +198,31 @@ public sealed partial class ExecutionService
             Notify("Next input saved to timeline; preview unchanged");
             return;
         }
-        var offset = take?.Start ?? 0; var source = take?.Inputs ?? _inputs.ToArray();
-        ValidateRange(start - offset, length, source.Length);
-        if (changedButtons == PadButtons.None && changedAxes == 0) return;
-        var copy = (ControllerState[])source.Clone();
-        for (var i = start - offset; i < start - offset + length; i++)
+        byte Axis(int bit, byte oldValue, byte newValue) => (changedAxes & (1 << bit)) != 0 ? newValue : oldValue;
+        ControllerState Merge(ControllerState original) => new((original.Buttons & ~changedButtons) | (value.Buttons & changedButtons), Axis(0, original.StickX, value.StickX), Axis(1, original.StickY, value.StickY),
+            Axis(2, original.CStickX, value.CStickX), Axis(3, original.CStickY, value.CStickY), Axis(4, original.TriggerL, value.TriggerL), Axis(5, original.TriggerR, value.TriggerR));
+        if (take == null)
         {
-            var original = copy[i]; byte Axis(int bit, byte oldValue, byte newValue) => (changedAxes & (1 << bit)) != 0 ? newValue : oldValue;
-            copy[i] = new((original.Buttons & ~changedButtons) | (value.Buttons & changedButtons), Axis(0, original.StickX, value.StickX), Axis(1, original.StickY, value.StickY),
-                Axis(2, original.CStickX, value.CStickX), Axis(3, original.CStickY, value.CStickY), Axis(4, original.TriggerL, value.TriggerL), Axis(5, original.TriggerR, value.TriggerR));
+            // Touch only the selected groups; the rest of a long movie is neither copied nor compared.
+            ValidateRange(start, length, _inputs.Count);
+            if (changedButtons == PadButtons.None && changedAxes == 0) return;
+            var edited = new ControllerState[length]; var changed = false;
+            for (var i = 0; i < length; i++) { edited[i] = Merge(_inputs[start + i]); changed |= edited[i] != _inputs[start + i]; }
+            if (!changed) return;
+            RememberEdit();
+            for (var i = 0; i < length; i++) _inputs[start + i] = edited[i];
+            _sections.Clear(); HistoryChanged(start);
         }
-        if (copy.SequenceEqual(source)) return;
-        if (take != null) { RememberEdit(); _takes[takeIndex] = take with { Inputs = copy }; Interlocked.Increment(ref _revision); }
-        else { RememberEdit(); _inputs.Clear(); _inputs.AddRange(copy); _sections.Clear(); HistoryChanged(start); }
+        else
+        {
+            var offset = take.Start; var source = take.Inputs;
+            ValidateRange(start - offset, length, source.Length);
+            if (changedButtons == PadButtons.None && changedAxes == 0) return;
+            var copy = (ControllerState[])source.Clone();
+            for (var i = start - offset; i < start - offset + length; i++) copy[i] = Merge(copy[i]);
+            if (copy.SequenceEqual(source)) return;
+            RememberEdit(); _takes[takeIndex] = take with { Inputs = copy }; Interlocked.Increment(ref _revision);
+        }
         Notify(take == null ? "Input range edited; seek to update preview" : "Candidate edited; active playback unchanged");
     });
     /// <summary>Move input intent, neutralizing the source and overwriting the destination.
@@ -328,7 +363,7 @@ public sealed partial class ExecutionService
             .Where(s => s.Position < _backend.Position && Valid(s.Position, s.HistoryHash))
             .OrderByDescending(s => s.Position).FirstOrDefault();
         if (saved != null) { RestoreSaved(saved); TouchCheckpoint(saved.Id); }
-        else { _backend.Restore(_initial!); ApplyEvents(0); _executedHistory = _history!.At(0); }
+        else { RestoreBackend(_initial!); ApplyEvents(0); _executedHistory = _history!.At(0); }
         Notify(saved == null ? "Returned to project start" : "Previous state: " + saved.Name);
     });
     private void TouchCheckpoint(string id)
@@ -341,12 +376,13 @@ public sealed partial class ExecutionService
     {
         var content = ProjectArchive.Load(saved.Path, ProjectArchive.StateKind); ValidateCompatibility(content.Metadata);
         if (content.Metadata.HistoryHash != saved.HistoryHash || content.InitialState.Position != saved.Position) throw new InvalidDataException("Saved state history metadata does not match its project reference.");
-        _backend.Restore(content.InitialState); _executedHistory = saved.HistoryHash;
+        RestoreBackend(content.InitialState); _executedHistory = saved.HistoryHash;
     }
     private void MaybeCheckpoint()
     {
+        if (_trialPlayback || _takingOver) return;
         FinishCheckpointWrite();
-        if (_pendingCheckpoint != null || !_checkpointPolicy.Enabled || _backend.Position == 0 ||
+        if (_renderResolutionOverride != 0 || _pendingCheckpoint != null || !_checkpointPolicy.Enabled || _backend.Position == 0 ||
             (IsRecordingLive && !_checkpointPolicy.CaptureWhileRecording)) return;
         var seconds = _backend.EmulatedSeconds;
         var previous = _checkpoints.Where(c => c.State.Position <= _backend.Position && Valid(c.State.Position, c.State.HistoryHash)).OrderByDescending(c => c.State.Position).FirstOrDefault();
@@ -381,21 +417,39 @@ public sealed partial class ExecutionService
             _checkpoints[_checkpoints.IndexOf(checkpoint)] = checkpoint with { LastUse = ++_checkpointAccess };
             return;
         }
-        _backend.Restore(_initial!); ApplyEvents(0); _executedHistory = _history!.At(0);
+        RestoreBackend(_initial!); ApplyEvents(0); _executedHistory = _history!.At(0);
     }
     private void PublishWorkspace()
     {
         _publishedCurrent = Current();
         if (_publishedRevision != _revision)
         {
-            PublishPollBoundaries();
-            Volatile.Write(ref _publishedTakes, _takes.Select(t => t with { Inputs = (ControllerState[])t.Inputs.Clone() }).ToArray());
-            Volatile.Write(ref _publishedSections, _sections.ToArray());
-            Volatile.Write(ref _publishedTags, _tags.ToArray());
+            PublishTakes();
+            PublishIfChanged(ref _publishedSections, _sections);
+            PublishIfChanged(ref _publishedTags, _tags);
+            PublishMemoryEdits();
             _publishedRevision = _revision;
         }
-        Volatile.Write(ref _publishedMarkers, !_hasProject ? [] : _savedStates.Select(s => new StateMarker(s.Id, s.Name, s.Position, false, Valid(s.Position, s.HistoryHash)))
-            .Concat(_checkpoints.Select(c => new StateMarker(c.State.Id, "Checkpoint", c.State.Position, true, Valid(c.State.Position, c.State.HistoryHash)))).ToArray());
+        PublishIfChanged(ref _publishedMarkers, !_hasProject ? [] : _savedStates.Select(s => new StateMarker(s.Id, s.Name, s.Position, false, Valid(s.Position, s.HistoryHash)))
+            .Concat(_checkpoints.Select(c => new StateMarker(c.State.Id, "Checkpoint", c.State.Position, true, Valid(c.State.Position, c.State.HistoryHash)))));
+    }
+
+    private static void PublishIfChanged<T>(ref IReadOnlyList<T> published, IEnumerable<T> values)
+    {
+        var next = values as IReadOnlyList<T> ?? values.ToArray();
+        if (!published.SequenceEqual(next)) Volatile.Write(ref published, Array.AsReadOnly(next.ToArray()));
+    }
+
+    private void PublishTakes()
+    {
+        if (_takes.Count == _publishedTakeSources.Length &&
+            _takes.Where((take, index) => !ReferenceEquals(take, _publishedTakeSources[index])).Any() == false) return;
+        var copies = new Dictionary<InputTake, InputTake>(ReferenceEqualityComparer.Instance);
+        for (var i = 0; i < _publishedTakeSources.Length; i++) copies.Add(_publishedTakeSources[i], _publishedTakes[i]);
+        var next = _takes.Select(take => copies.TryGetValue(take, out var copy) ? copy :
+            take with { Inputs = (ControllerState[])take.Inputs.Clone() }).ToArray();
+        _publishedTakeSources = _takes.ToArray();
+        Volatile.Write(ref _publishedTakes, Array.AsReadOnly(next));
     }
 
     private sealed record SessionBackup(string Path, BackendOptions Options, EmulatorSnapshot State, EmulatorSnapshot? Initial,
@@ -416,7 +470,7 @@ public sealed partial class ExecutionService
           RuntimeHistory = _runtimeHistory.ToArray(), AllowRuntimeMismatch = _allowRuntimeMismatch, CompatibilityWarning = CompatibilityWarning };
     private void RestoreSession(SessionBackup saved)
     {
-        LoadGame(saved.Path, saved.Options); _backend.Restore(saved.State);
+        LoadGame(saved.Path, saved.Options); RestoreBackend(saved.State);
         _initial = saved.Initial;
         _projectStart = saved.Start;
         _baselineRuntime = saved.BaselineRuntime;
@@ -436,5 +490,7 @@ public sealed partial class ExecutionService
             _checkpoints.AddRange(saved.AutomaticCheckpoints); _checkpointAccess = saved.CheckpointAccess;
         }
         _revision = saved.Revision; _publishedRevision = -1;
+        _lastPresentedInput = InputBeforePosition(saved.State.Position);
+        Present(_latestFrame, _lastPresentedInput, saved.State.Position);
     }
 }

@@ -4,6 +4,9 @@ namespace TasStudio.Emulation;
 
 public sealed partial class ExecutionService
 {
+    public Task<string[]> GetProtectedStateFilesAsync() => Enqueue(() =>
+        _savedStates.Select(state => state.Path).Concat(_checkpoints.Select(checkpoint => checkpoint.State.Path)).ToArray());
+
     private void ClearInputFromCurrentPosition()
     {
         var start = checked((int)_backend.Position);
@@ -37,7 +40,7 @@ public sealed partial class ExecutionService
             throw new InvalidDataException("Cannot submit a play after changing history before the experiment's starting group.");
         var data = new ExperimentPlayData(anchor.BaselineHash, _inputs.Skip(anchor.Start).Take(end - anchor.Start).ToArray(),
             _events.Where(e => e.Position >= (ulong)anchor.Start && e.Position <= (ulong)end).ToArray(),
-            PollRecords().Where(f => f.Index >= anchor.Start && f.Index < end).ToArray());
+            PollRecords(anchor.Start, end));
         return new ExperimentPlay(index, name, score, anchor.Start, end - anchor.Start, data.Encode());
     });
 
@@ -60,7 +63,7 @@ public sealed partial class ExecutionService
             var receipt = play with { Data = data.Encode() };
             RememberEdit();
             var id = Guid.NewGuid().ToString("N");
-            _takes.Add(new(id, play.Name, play.Start, data.Inputs, baseline, "Experiment play")
+            _takes.Add(new(id, play.DisplayName, play.Start, data.Inputs, baseline, $"Experiment play · {play.Name} · score {play.Score:G8}")
                 { Experiment = receipt, EventsHash = EventsHash(play.Start, play.Length) });
             Interlocked.Increment(ref _revision);
             Notify("Experiment play added as a take; active playback unchanged");
@@ -70,6 +73,7 @@ public sealed partial class ExecutionService
 
     private void ApplyTakeRecording(InputTake take, int sourceOffset, int start, int length)
     {
+        InvalidateTimeline(start);
         var data = take.Experiment is { } play ? ExperimentPlayData.Decode(play) : null;
         for (var i = 0; i < length; i++)
         {
@@ -123,7 +127,7 @@ public sealed partial class ExecutionService
                     if (section.Start + section.Length > end) sections.Add(section with { Start = end, Length = section.Start + section.Length - end });
                 }
             }
-            _sections.Clear(); _sections.AddRange(sections); _sections.Add(new(play.Start, play.Length, play.Name));
+            _sections.Clear(); _sections.AddRange(sections); _sections.Add(new(play.Start, play.Length, play.DisplayName));
             HistoryChanged(play.Start);
             Notify("Experiment play applied to Active playback; seek to preview. Undo restores previous inputs.");
         });

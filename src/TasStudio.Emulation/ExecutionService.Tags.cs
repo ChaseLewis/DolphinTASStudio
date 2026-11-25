@@ -5,8 +5,8 @@ public sealed record TimelineTag(string Id, ulong Position, string Name);
 public sealed partial class ExecutionService
 {
     private readonly List<TimelineTag> _tags = [];
-    private TimelineTag[] _publishedTags = [];
-    public IReadOnlyList<TimelineTag> Tags => Array.AsReadOnly(Volatile.Read(ref _publishedTags));
+    private IReadOnlyList<TimelineTag> _publishedTags = [];
+    public IReadOnlyList<TimelineTag> Tags => Volatile.Read(ref _publishedTags);
     private static string TagName(string name)
     {
         name = name.Trim();

@@ -11,7 +11,7 @@ internal static class CSharpCommand
             Path.Combine(AppContext.BaseDirectory, "TasStudio.Worker.exe"),
             Path.Combine(AppContext.BaseDirectory, "native", "dolphin_libretro.dll"),
             Path.Combine(AppContext.BaseDirectory, "system"), Console.WriteLine, token);
-        Console.WriteLine("Results: " + Path.Combine(batchDirectory, "results.json"));
+        Console.WriteLine("Results: " + ExperimentFiles.ExistingPath(Path.Combine(batchDirectory, "results.json")));
         return !token.IsCancellationRequested && results.All(r => r.Status == "completed") ? 0 : 1;
     }
 
@@ -19,8 +19,16 @@ internal static class CSharpCommand
     {
         configPath = Path.GetFullPath(configPath); outputDirectory = Path.GetFullPath(outputDirectory);
         if (Directory.Exists(outputDirectory)) throw new IOException("Choose a new batch directory; existing runs are preserved.");
+        var storage = ExperimentStorage.HoldBatch(outputDirectory);
+        try { return await RunCoreAsync(configPath, outputDirectory, token); }
+        finally { storage.Dispose(); ExperimentStorage.CleanBatch(outputDirectory, Console.WriteLine); }
+    }
+
+    private static async Task<int> RunCoreAsync(string configPath, string outputDirectory, CancellationToken token)
+    {
         ValidateRuntimeFiles();
         var config = ExperimentFiles.Read<CSharpExperimentFile>(configPath);
+        config = config with { DisplayName = ProjectExperiments.DisplayName(configPath) };
         var root = Path.GetDirectoryName(configPath)!;
         var sourcePath = Path.GetFullPath(config.SourceProject, root);
         var projectPath = Path.GetFullPath(config.Project, root);
@@ -34,6 +42,7 @@ internal static class CSharpCommand
             { TopPlays = config.TopPlays };
         definition.Validate();
         Directory.CreateDirectory(outputDirectory);
+        ExperimentFiles.Write(Path.Combine(outputDirectory, ProjectExperiments.IdentityFileName), new { Name = config.DisplayName });
         ExperimentFiles.Write(Path.Combine(outputDirectory, "request.json"), config);
         var buildDirectory = Path.Combine(outputDirectory, "build");
         Console.WriteLine("Building C# experiment: " + projectPath);
@@ -46,15 +55,18 @@ internal static class CSharpCommand
             if (build.ExitCode != 0) throw new InvalidOperationException("Experiment build failed. See compiler output.");
         }
         token.ThrowIfCancellationRequested();
-        var source = FolderProject.Load(sourcePath);
         var snapshot = Path.Combine(outputDirectory, "source", "project.tasproj");
-        var metadata = source.Archive.Metadata with { GamePath = FolderProject.ResolveRomPath(sourcePath, source.Archive.Metadata.GamePath) };
-        FolderProject.Save(snapshot, metadata, source.Archive.InitialState, source.Takes, source.Sections, source.States, source.AutomaticCheckpoints);
+        using (PerfLog.Time("experiment.batch-snapshot"))
+        {
+            // Trials start from one state; the project's other states stay where they are.
+            var source = FolderProject.LoadForState(sourcePath, config.Start == ExperimentStart.SaveState ? config.StateId : null);
+            ProjectExperiments.SaveRunSnapshot(snapshot, sourcePath, source);
+        }
         var worker = Path.Combine(AppContext.BaseDirectory, "TasStudio.Worker.exe");
         var results = await ExperimentRunner.RunAsync(definition with { AssemblyPath = Path.Combine(buildDirectory, config.AssemblyName + ".dll") },
             snapshot, outputDirectory, worker, Path.Combine(AppContext.BaseDirectory, "native", "dolphin_libretro.dll"),
             Path.Combine(AppContext.BaseDirectory, "system"), Console.WriteLine, token);
-        Console.WriteLine("Results: " + Path.Combine(outputDirectory, "results.json"));
+        Console.WriteLine("Results: " + ExperimentFiles.ExistingPath(Path.Combine(outputDirectory, "results.json")));
         return !token.IsCancellationRequested && results.All(r => r.Status == "completed") ? 0 : 1;
     }
 

@@ -16,4 +16,7 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
   </ItemGroup>
+  <Target Name="IsolateTestAppData" AfterTargets="Build">
+    <WriteLinesToFile File="$(TargetDir)tasstudio-data.path" Lines="test-data" Overwrite="true" />
+  </Target>
 </Project>

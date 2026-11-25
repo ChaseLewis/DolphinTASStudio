@@ -13,6 +13,31 @@ if (args.Length < 2) throw new ArgumentException("Usage: integration <rom> <outp
 var rom = Path.GetFullPath(args[0]);
 var output = Path.GetFullPath(args[1]);
 Directory.CreateDirectory(output);
+if (Array.IndexOf(args, "--live-gci-folder") is var liveGciIndex && liveGciIndex >= 0)
+{
+    await LiveGciFolder.Run(rom, output, args[liveGciIndex + 1]);
+    return;
+}
+if (Array.IndexOf(args, "--gci-folder") is var gciIndex && gciIndex >= 0)
+{
+    await GciFolderImport.Run(rom, output, args[gciIndex + 1]);
+    return;
+}
+if (args.Contains("take-over"))
+{
+    await TakeOver.Run(rom, output);
+    return;
+}
+if (args.Contains("take-workflow"))
+{
+    await TakeWorkflow.Run(rom, output);
+    return;
+}
+if (args.Contains("render-resolution"))
+{
+    RenderResolution.Run(rom, output);
+    return;
+}
 if (args.Contains("dtm-export"))
 {
     var sourceIndex = Array.IndexOf(args, "--movie");

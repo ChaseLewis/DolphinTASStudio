@@ -36,6 +36,7 @@ public static class CSharpWorkspace
             "Experiments.csproj", "Experiments", "Experiment", Count: stateId == null ? 4 : 1,
             Start: stateId != null || capturedStart ? ExperimentStart.SaveState : ExperimentStart.Boot,
             StateId: stateId ?? (capturedStart ? ExperimentStates.ProjectStart : null), Parameters: JsonSerializer.SerializeToElement(new { })));
+        if (name != null) ProjectExperiments.WriteDisplayName(destination, name);
         ExperimentFiles.Write(Path.Combine(destination, ".vscode", "settings.json"), new Dictionary<string, object>
         { ["tasStudio.workerPath"] = Path.Combine(sdkDirectory, "TasStudio.Worker.exe") });
         ExperimentFiles.Write(Path.Combine(destination, ".vscode", "extensions.json"), new { recommendations = new[] { "ms-dotnettools.csharp", "tas-studio.experiments" } });

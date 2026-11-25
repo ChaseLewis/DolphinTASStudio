@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
 using TasStudio.Core;
 
@@ -27,7 +28,11 @@ public sealed record ExperimentTopPlays(string ScoreField = "Score", bool Higher
 }
 
 /// <summary>Compressed, immutable-on-submission timeline snapshot; no savestate/profile assets are retained.</summary>
-public sealed record ExperimentPlay(int SubmissionIndex, string Name, double Score, int Start, int Length, byte[] Data);
+public sealed record ExperimentPlay(int SubmissionIndex, string Name, double Score, int Start, int Length, byte[] Data)
+{
+    public string? ExperimentName { get; init; }
+    [JsonIgnore] public string DisplayName => string.IsNullOrWhiteSpace(ExperimentName) ? "Experiment" : ExperimentName;
+}
 
 /// <summary>The play is structurally valid, but applying it requires an explicit history override.</summary>
 public sealed class ExperimentPlayHistoryMismatchException : InvalidOperationException
@@ -84,7 +89,10 @@ internal sealed record ExperimentPlayData(string BaselineHash, ControllerState[]
 
 public sealed record ExperimentPlaySummary(int TrialIndex, int SubmissionIndex, string Name, double Score, int Start, int Length)
 {
-    public override string ToString() => $"{Score:G8} · {Name} · Trial {TrialIndex} · groups [{Start}, {Start + Length})";
+    public string? ExperimentName { get; init; }
+    [JsonIgnore] public string DisplayName => string.IsNullOrWhiteSpace(ExperimentName) ? "Experiment" : ExperimentName;
+    public override string ToString() => $"{DisplayName} · score {Score:G8}" + (DisplayName != Name ? $" · {Name}" : "") +
+        $" · Trial {TrialIndex} · groups [{Start}, {Start + Length})";
 }
 
 public static class ExperimentPlayResults
@@ -108,7 +116,8 @@ public static class ExperimentPlayResults
             (options?.HigherIsBetter == false ? "ASC" : "DESC") + ",trial_index,submission_index";
         using var reader = query.ExecuteReader();
         var results = new List<ExperimentPlaySummary>();
-        while (reader.Read()) results.Add(new(reader.GetInt32(0), reader.GetInt32(1), reader.GetString(2), reader.GetDouble(3), reader.GetInt32(4), reader.GetInt32(5)));
+        var name = ProjectExperiments.ReadBatchExperimentName(batch);
+        while (reader.Read()) results.Add(new(reader.GetInt32(0), reader.GetInt32(1), reader.GetString(2), reader.GetDouble(3), reader.GetInt32(4), reader.GetInt32(5)) { ExperimentName = name });
         return results;
     }
 
@@ -119,6 +128,7 @@ public static class ExperimentPlayResults
         query.Parameters.AddWithValue("$trial", trialIndex); query.Parameters.AddWithValue("$submission", submissionIndex);
         using var reader = query.ExecuteReader();
         if (!reader.Read()) throw new InvalidDataException("This play is no longer in the top K. Refresh the results.");
-        return new(submissionIndex, reader.GetString(0), reader.GetDouble(1), reader.GetInt32(2), reader.GetInt32(3), (byte[])reader[4]);
+        return new(submissionIndex, reader.GetString(0), reader.GetDouble(1), reader.GetInt32(2), reader.GetInt32(3), (byte[])reader[4])
+            { ExperimentName = ProjectExperiments.ReadBatchExperimentName(batch) };
     }
 }

@@ -29,22 +29,62 @@ public sealed partial class MainWindow
     private Control BuildLayout()
     {
         bool Loaded() => !_homeVisible && _execution.IsLoaded;
-        bool Project() => _execution.HasProject;
+        bool Project() => _execution.HasProject && !_movieMode;
         var root = new Grid { RowDefinitions = new("Auto,Auto,*,Auto") };
         root.Children.Add(new Menu { ItemsSource = new[]
         {
             new MenuItem { Header = "_File", ItemsSource = new Control[] { ActionMenu("Play Game…    Ctrl+O", OpenGame), ActionMenu("Projects", ShowProjects), ActionMenu("New Project", NewProject), ActionMenu("Open Project / Replay…", OpenProject), ActionMenu("Recover inputs…", RecoverInputs), ActionMenu("Save Project    Ctrl+S", SaveProject, Project), ActionMenu("Save Project As…", SaveProjectAs, Project), ActionMenu("Export Replay…", ExportReplay, Project), new MenuItem { Header = "Export to Dolphin", ItemsSource = new[] { ActionMenu("Quick…", () => ExportDolphinMovie(DolphinMovieExportMode.Quick), Project), ActionMenu("Full…", () => ExportDolphinMovie(DolphinMovieExportMode.Full), Project) } } } },
             new MenuItem { Header = "_Emulation", ItemsSource = new Control[] { ActionMenu("Play / Pause", ToggleRun, Loaded), ActionMenu("Frame advance & keep input    F11", Step, Loaded), ActionMenu("Frame advance & clear    F10", StepNeutral, () => Loaded() && _execution.IsPreviewCurrent && _timeline.SelectedTake == null), ActionMenu("Play one recorded frame    F12", StepWithoutMovingSelection, () => Loaded() && _execution.HasProject && _execution.IsPreviewCurrent && _execution.Position < (ulong)_execution.Inputs.Count), ActionMenu("Pause    Escape", PausePlayback, Loaded), ActionMenu("Restart from start", RestartPlayback, Project), ActionMenu("Previous save state", PreviousState, Project), ActionMenu("Reset", Reset, Loaded), new Separator(), ActionMenu("Save State to File…", SaveStateFile, Loaded), ActionMenu("Load State from File…", LoadStateFile, Loaded), ActionMenu("Save Slot 1    Shift+F1", () => SaveSlot(1), Loaded), ActionMenu("Load Slot 1    F1", () => LoadSlot(1), Loaded) } },
-            new MenuItem { Header = "_Movie", ItemsSource = new Control[] { ActionMenu("Record / stop live controller input", RecordLive, Project), new Separator(), ActionMenu("Undo    Ctrl+Z", _execution.UndoAsync, Project), ActionMenu("Redo    Ctrl+Y", _execution.RedoAsync, Project), ActionMenu("Copy Selection as Take", CopyTake, Project), ActionMenu("Save Named State", SaveNamedState, Project) } },
-            new MenuItem { Header = "_Options", ItemsSource = new[] { ActionMenu("Controllers…", ControllerSettings), ActionMenu("Configuration…", ApplicationSettings), ActionMenu("Updates…", UpdateSettings) } },
+            new MenuItem { Header = "_Movie", ItemsSource = new Control[] { ActionMenu("Watch movie from start", () => EnterMovieModeAsync(), Project), ActionMenu("Watch movie from here", () => EnterMovieModeAsync(false), Project), ActionMenu("Return to editor", ExitMovieModeAsync, () => _movieMode), new Separator(), ActionMenu("Record / stop live controller input", RecordLive, Project), new Separator(), ActionMenu("Undo    Ctrl+Z", _execution.UndoAsync, Project), ActionMenu("Redo    Ctrl+Y", _execution.RedoAsync, Project), ActionMenu("Copy Selection as Take", CopyTake, Project), ActionMenu("Save Named State", SaveNamedState, Project) } },
+            new MenuItem { Header = "_Experiments", ItemsSource = new[] { ActionMenu("All project experiments…", ShowProjectExperiments, () => Project() && _projectPath != null), ActionMenu("Clean experiment storage…", CleanExperimentStates, () => Project() && _projectPath != null) } },
+            new MenuItem { Header = "_Options", ItemsSource = new[] { ActionMenu("Controllers…", ControllerSettings), ActionMenu("Configuration…", ApplicationSettings), ActionMenu("Project memory card…", ManageProjectMemoryCard, Project), ActionMenu("Updates…", UpdateSettings) } },
             new MenuItem { Header = "_View", ItemsSource = BuildViewMenu() }
         } });
+        _movieDisabledMenus.AddRange(((Menu)root.Children[0]).Items.OfType<MenuItem>()
+            .Where(item => item.Header is "_File" or "_Emulation" or "_Options"));
         var toolbar = new WrapPanel { Margin = new Thickness(8, 4, 8, 7) };
         toolbar.Children.Add(IconButton("Projects", "folder", ShowProjects));
         toolbar.Children.Add(IconButton("Save", "save", SaveProject, Project));
+        var takeOver = IconButton("Take Over", "pad", () => EnterTakeOverModeAsync(), Project);
+        takeOver.Name = "EnterTakeOver";
+        ToolTip.SetTip(takeOver, "Play from the current TAS position without recording; return with Escape");
+        toolbar.Children.Add(takeOver);
         toolbar.Children.Add(ToolSeparator());
         toolbar.Children.Add(IconButton("Controllers", "pad", ControllerSettings)); toolbar.Children.Add(IconButton("Config", "config", ApplicationSettings));
         toolbar.Children.Add(IconButton("Watches", "watch", () => { ToggleWatcher(); return Task.CompletedTask; }, () => !_execution.IsManualPlay)); toolbar.Children.Add(ToolSeparator());
+        toolbar.Children.Add(BuildAudioControls());
+        Grid.SetRow(toolbar, 1); root.Children.Add(toolbar);
+        var workspace = BuildDockWorkspace();
+        Grid.SetRow(workspace, 2); root.Children.Add(workspace);
+        _editorToolbar = toolbar; _editorWorkspace = workspace;
+        _movieToolbar = BuildMovieToolbar(); Grid.SetRow(_movieToolbar, 1); root.Children.Add(_movieToolbar);
+        _takeOverToolbar = BuildTakeOverToolbar(); Grid.SetRow(_takeOverToolbar, 1); root.Children.Add(_takeOverToolbar);
+        _manualWorkspace = BuildPlayWorkspace(); Grid.SetRow(_manualWorkspace, 2); root.Children.Add(_manualWorkspace);
+        var homeTools = new WrapPanel { Margin = new Thickness(8, 4, 8, 7) };
+        homeTools.Children.Add(IconButton("New project", "state", NewProject));
+        homeTools.Children.Add(IconButton("Open project", "folder", OpenProject));
+        homeTools.Children.Add(IconButton("Verify projects", "watch", () => VerifyProjects(_settings.RecentProjects)));
+        _cancelVerification.Click += (_, _) => _verificationCancellation?.Cancel();
+        homeTools.Children.Add(_cancelVerification);
+        homeTools.Children.Add(ToolSeparator());
+        homeTools.Children.Add(IconButton("Play a game", "pad", OpenGame));
+        homeTools.Children.Add(IconButton("Resume game / editor", "play", () => { ShowEditor(); return Task.CompletedTask; }, () => _execution.IsLoaded));
+        _homeToolbar = homeTools; Grid.SetRow(homeTools, 1); root.Children.Add(homeTools);
+        _projectHome = BuildProjectHome(); Grid.SetRow(_projectHome, 2); root.Children.Add(_projectHome);
+        toolbar.IsVisible = workspace.IsVisible = false;
+        var status = new Grid { ColumnDefinitions = new("*,Auto,Auto"), ColumnSpacing = 16, Margin = new Thickness(10, 5) };
+        _projectStatus.FontSize = 11; _projectStatus.TextWrapping = TextWrapping.NoWrap; _projectStatus.TextTrimming = TextTrimming.CharacterEllipsis;
+        _status.FontSize = 11; _status.TextWrapping = TextWrapping.NoWrap; _status.TextTrimming = TextTrimming.CharacterEllipsis; _status.MaxWidth = 450;
+        status.Children.Add(_projectStatus); Grid.SetColumn(_status, 1); status.Children.Add(_status);
+        Grid.SetColumn(_updateNotice, 2); status.Children.Add(_updateNotice);
+        var footer = new StackPanel(); footer.Children.Add(_compatibilityNotice); footer.Children.Add(status);
+        Grid.SetRow(footer, 3); root.Children.Add(footer); return root;
+    }
+    private event Action? _refreshAudioControls;
+
+    private Control BuildAudioControls(bool compact = false)
+    {
+        var controls = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         var soundIcon = new Grid { Width = 24, Height = 24 };
         soundIcon.Children.Add(new Avalonia.Controls.Shapes.Path
         {
@@ -70,13 +110,14 @@ public sealed partial class MainWindow
         var mute = new Button
         {
             Content = soundIcon, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
-            Padding = new Thickness(9), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0)
+            Padding = new Thickness(compact ? 5 : 9), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0)
         };
-        toolbar.Children.Add(mute);
+        controls.Children.Add(mute);
         var volume = new Slider { Minimum = 0, Maximum = 100, Value = _settings.Volume, Width = 90, VerticalAlignment = VerticalAlignment.Center };
         Avalonia.Automation.AutomationProperties.SetName(volume, "Volume");
         void RefreshAudioControls()
         {
+            volume.Value = _settings.Volume;
             soundWaves.IsVisible = !_settings.Muted;
             cancelSymbol.IsVisible = _settings.Muted;
             volume.IsEnabled = !_settings.Muted;
@@ -88,34 +129,19 @@ public sealed partial class MainWindow
         {
             _settings.Muted = !_settings.Muted;
             _audio.SetVolume(_settings.Volume, _settings.Muted);
-            RefreshAudioControls();
+            _refreshAudioControls?.Invoke();
         };
+        _refreshAudioControls += RefreshAudioControls;
         RefreshAudioControls();
-        volume.ValueChanged += (_, _) => { _settings.Volume = (int)volume.Value; _audio.SetVolume(_settings.Volume, _settings.Muted); }; toolbar.Children.Add(volume);
-        Grid.SetRow(toolbar, 1); root.Children.Add(toolbar);
-        var workspace = BuildDockWorkspace();
-        Grid.SetRow(workspace, 2); root.Children.Add(workspace);
-        _editorToolbar = toolbar; _editorWorkspace = workspace;
-        _manualWorkspace = BuildPlayWorkspace(); Grid.SetRow(_manualWorkspace, 2); root.Children.Add(_manualWorkspace);
-        var homeTools = new WrapPanel { Margin = new Thickness(8, 4, 8, 7) };
-        homeTools.Children.Add(IconButton("New project", "state", NewProject));
-        homeTools.Children.Add(IconButton("Open project", "folder", OpenProject));
-        homeTools.Children.Add(IconButton("Verify projects", "watch", () => VerifyProjects(_settings.RecentProjects)));
-        _cancelVerification.Click += (_, _) => _verificationCancellation?.Cancel();
-        homeTools.Children.Add(_cancelVerification);
-        homeTools.Children.Add(ToolSeparator());
-        homeTools.Children.Add(IconButton("Play a game", "pad", OpenGame));
-        homeTools.Children.Add(IconButton("Resume game / editor", "play", () => { ShowEditor(); return Task.CompletedTask; }, () => _execution.IsLoaded));
-        _homeToolbar = homeTools; Grid.SetRow(homeTools, 1); root.Children.Add(homeTools);
-        _projectHome = BuildProjectHome(); Grid.SetRow(_projectHome, 2); root.Children.Add(_projectHome);
-        toolbar.IsVisible = workspace.IsVisible = false;
-        var status = new Grid { ColumnDefinitions = new("*,Auto,Auto"), ColumnSpacing = 16, Margin = new Thickness(10, 5) };
-        _projectStatus.FontSize = 11; _projectStatus.TextWrapping = TextWrapping.NoWrap; _projectStatus.TextTrimming = TextTrimming.CharacterEllipsis;
-        _status.FontSize = 11; _status.TextWrapping = TextWrapping.NoWrap; _status.TextTrimming = TextTrimming.CharacterEllipsis; _status.MaxWidth = 450;
-        status.Children.Add(_projectStatus); Grid.SetColumn(_status, 1); status.Children.Add(_status);
-        Grid.SetColumn(_updateNotice, 2); status.Children.Add(_updateNotice);
-        var footer = new StackPanel(); footer.Children.Add(_compatibilityNotice); footer.Children.Add(status);
-        Grid.SetRow(footer, 3); root.Children.Add(footer); return root;
+        volume.ValueChanged += (_, _) =>
+        {
+            if (_settings.Volume == (int)volume.Value) return;
+            _settings.Volume = (int)volume.Value;
+            _audio.SetVolume(_settings.Volume, _settings.Muted);
+            _refreshAudioControls?.Invoke();
+        };
+        controls.Children.Add(volume);
+        return controls;
     }
     private static Control ToolSeparator() => new Border { Width = 1, Background = LineBrush, Margin = new Thickness(7, 7) };
     private Button IconButton(string name, string icon, Func<Task> action, Func<bool>? enabled = null)
@@ -145,6 +171,7 @@ public sealed partial class MainWindow
         seek.Name = "SeekSelection"; ToolTip.SetTip(seek, "Seek the game preview to the start of the timeline selection");
         transport.Children.Add(seek);
         transport.Children.Add(TransportButton("Save state", "state", SaveNamedState, () => _execution.HasProject));
+        transport.Children.Add(BuildTagSearch());
         transport.Children.Add(_cancelSeek);
         header.Children.Add(transport); Grid.SetColumn(_timelinePreview, 1); header.Children.Add(_timelinePreview); panel.Children.Add(header);
         _cancelSeek.Click += async (_, _) => { if (_seeking) { _cancelSeek.IsEnabled = false; await _execution.PauseAsync(); } };
@@ -153,28 +180,51 @@ public sealed partial class MainWindow
         _timeline.TagRequested += async position => await Perform(() => EditTimelineTag(null, position));
         _timeline.KeyDown += async (_, e) =>
         {
-            if (e.Handled || e.Key != Key.Delete || _timeline.SelectedTake == null) return;
-            e.Handled = true; await Perform(DeleteTake);
+            if (e.Handled) return;
+            if (e.Key == Key.F && e.KeyModifiers == KeyModifiers.Control)
+            { e.Handled = true; _tagSearch.Focus(); _tagSearch.SelectAll(); return; }
+            if (e.KeyModifiers == KeyModifiers.Control && e.Key is Key.C or Key.V)
+            { e.Handled = true; await Perform(e.Key == Key.C ? CopySelectedInputs : PasteSelectedInputs); return; }
+            if (_timeline.SelectedTake == null || e.KeyModifiers != KeyModifiers.None) return;
+            if (e.Key == Key.Delete) { e.Handled = true; await Perform(DeleteTake); }
         };
         var scroll = new ScrollViewer { Content = _timeline, VerticalContentAlignment = VerticalAlignment.Top, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
         Grid.SetRow(scroll, 1); panel.Children.Add(scroll);
         int ClearFrom(bool context) => context ? _timeline.ContextFrame ?? -1 : _timeline.SelectedFrame;
         Control[] EditMenu(bool context = false) => [
+            ActionMenu("Take over from here", () => EnterTakeOverModeAsync((ulong)ClearFrom(context)),
+                () => _execution.HasProject && !_movieMode && (context ? _timeline.ContextTake : _timeline.SelectedTake) == null &&
+                    ClearFrom(context) >= 0 && ClearFrom(context) <= _execution.Inputs.Count),
+            new Separator(),
             ActionMenu("Undo    Ctrl+Z", _execution.UndoAsync, () => _execution.HasProject),
             ActionMenu("Redo    Ctrl+Y", _execution.RedoAsync, () => _execution.HasProject), new Separator(),
+            ActionMenu("Copy inputs    Ctrl+C", CopySelectedInputs, CanClearSelectedInput),
+            ActionMenu("Paste inputs at selection    Ctrl+V", PasteSelectedInputs, CanPasteInput),
             ActionMenu("Copy selection as take", CopyTake, HasInputSelection),
             ActionMenu("Move selection left    Shift+Left", () => MoveSelectedInput(-1), () => CanMoveSelectedInput(-1)),
             ActionMenu("Move selection right    Shift+Right", () => MoveSelectedInput(1), () => CanMoveSelectedInput(1)),
             ActionMenu("Clear selected input", ClearSelectedInput, CanClearSelectedInput),
             ActionMenu("Clear later input", () => ClearLaterInput(ClearFrom(context)),
                 () => _execution.HasProject && (context || _timeline.SelectedTake == null) && ClearFrom(context) >= 0 && ClearFrom(context) < _execution.Inputs.Count - 1),
+            ActionMenu("Rename take…    F2", () => RenameTake(context ? _timeline.ContextTake : _timeline.SelectedTake),
+                () => _execution.HasProject && (context ? _timeline.ContextTake : _timeline.SelectedTake) != null),
             ActionMenu("Delete take", () => DeleteTake(context ? _timeline.ContextTake : _timeline.SelectedTake),
                 () => _execution.HasProject && (context ? _timeline.ContextTake : _timeline.SelectedTake) != null),
+            ActionMenu("Mark / unmark take active", () => ToggleTakeActive(context ? _timeline.ContextTake : _timeline.SelectedTake),
+                () => _execution.HasProject && (context ? _timeline.ContextTake : _timeline.SelectedTake) != null),
+            ActionMenu("Move take up (higher priority)", () => _execution.MoveTakeAsync((context ? _timeline.ContextTake : _timeline.SelectedTake)!, -1),
+                () => _execution.HasProject && (context ? _timeline.ContextTake : _timeline.SelectedTake) is { } id && _execution.Takes.FirstOrDefault()?.Id != id),
+            ActionMenu("Move take down (lower priority)", () => _execution.MoveTakeAsync((context ? _timeline.ContextTake : _timeline.SelectedTake)!, 1),
+                () => _execution.HasProject && (context ? _timeline.ContextTake : _timeline.SelectedTake) is { } id && _execution.Takes.LastOrDefault()?.Id != id),
+            ActionMenu("Trial active takes", TrialActiveTakes, HasActiveTakes),
+            ActionMenu("Apply active takes", ApplyActiveTakes, HasActiveTakes),
             ActionMenu("Use selected section", UseTake, () => CanClearSelectedInput() && _timeline.SelectedTake != null && _timeline.SelectedFrame <= _execution.Inputs.Count),
             TakeAtCursorMenu(),
             ActionMenu("Audition take", AuditionTake, () => CanClearSelectedInput() && _timeline.SelectedTake != null), new Separator(),
             ActionMenu("Load selected state", LoadSelectedMarker, () => _timeline.SelectedMarker is { Valid: true }),
             ActionMenu("Clear selected state", ClearSelectedMarker, () => _timeline.SelectedMarker != null),
+            ActionMenu("Clear memory edits here", ClearMemoryEditsHere, () => CanClearMemoryEdits() && _timeline.SelectedMemoryEditPosition != null),
+            ActionMenu("Clear all memory edits…", ClearAllMemoryEdits, CanClearMemoryEdits),
             new MenuItem { Header = "Experiment", Name = "StateExperimentMenu", IsVisible = false },
             new Separator(),
             ActionMenu("Rename tag…", () => EditTimelineTag(_timeline.SelectedTag, _timeline.SelectedTag!.Position), () => _timeline.SelectedTag != null),
@@ -199,8 +249,15 @@ public sealed partial class MainWindow
             return editMenu;
         }
         _timeline.ContextMenu = CreateEditMenu(true);
+        _timeline.MemoryEditsRequested += ShowMemoryEdits;
         var actions = new Grid { ColumnDefinitions = new("Auto,*,Auto"), ColumnSpacing = 8, Margin = new Thickness(10, 6) };
         var left = new WrapPanel(); left.Children.Add(ActionButton("+ Take", CopyTake, HasInputSelection));
+        var active = ActionButton("Mark active", () => ToggleTakeActive(_timeline.SelectedTake), () => _execution.HasProject && _timeline.SelectedTake != null);
+        active.Name = "ToggleTakeActive"; left.Children.Add(active); _takeActiveButton = active;
+        var trial = ActionButton("Trial takes", TrialActiveTakes, HasActiveTakes); trial.Name = "TrialActiveTakes"; left.Children.Add(trial);
+        var apply = ActionButton("Apply takes", ApplyActiveTakes, HasActiveTakes); apply.Name = "ApplyActiveTakes"; left.Children.Add(apply);
+        ToolTip.SetTip(trial, "Play from the earliest active take. The highest active take wins overlaps; lower takes and Active playback fill gaps. Escape stops.");
+        ToolTip.SetTip(apply, "Apply the chosen inputs to Active playback in one undoable edit. Keeps the takes and clears their active marks.");
         var more = new Button { Content = "⋯", Padding = new Thickness(9, 2) };
         var menu = CreateEditMenu(); more.Click += (_, _) => menu.Open(more);
         ToolTip.SetTip(more, "Timeline editing and checkpoint settings"); left.Children.Add(more); actions.Children.Add(left);
@@ -230,10 +287,10 @@ public sealed partial class MainWindow
         var zoom = new StackPanel { Orientation = Orientation.Horizontal };
         zoom.Children.Add(ActionButton("−", () => ZoomTimeline(1.5))); zoom.Children.Add(ActionButton("+", () => ZoomTimeline(.67)));
         Grid.SetColumn(zoom, 2); actions.Children.Add(zoom);
-        ToolTip.SetTip(scroll, "Drag selects a range; drag inside a selected range to move it (Shift+drag also moves a single group). Shift+Left/Right moves one group. Moves replace destination inputs and leave neutral inputs behind; Ctrl+Z undoes. Middle-click adds a tag. Wheel pans; Ctrl+wheel zooms.");
+        ToolTip.SetTip(scroll, "Drag selects a range and shows its duration. Drag either selection edge to resize; hover the duration for start/end times. Drag inside a selected range to move it (Shift+drag also moves a single group). Shift+Left/Right moves one group. Moves replace destination inputs and leave neutral inputs behind; Ctrl+Z undoes. Middle-click adds a tag. Wheel pans; Ctrl+wheel zooms.");
         Grid.SetRow(actions, 2); panel.Children.Add(actions); return panel;
     }
-    private bool HasInputSelection() => _execution.HasProject && _timeline.SelectedFrame < _execution.Inputs.Count;
+    private bool HasInputSelection() => CanClearSelectedInput();
     private bool CanClearSelectedInput()
     {
         if (!_execution.HasProject) return false;
@@ -258,6 +315,7 @@ public sealed partial class MainWindow
         if (delta == 0) return;
         var start = _timeline.SelectedFrame; var end = _timeline.SelectionEnd; var take = _timeline.SelectedTake;
         await FlushInputEditsAsync(); await PausePlayback();
+        if (!await ConfirmInputOverwrite(Math.Min(start, start + delta), take)) return;
         await _execution.MoveInputRangeAsync(start, end - start, take, start + delta);
         _timeline.InputCount = _execution.Inputs.Count;
         _timeline.SetSelection(start + delta, end + delta, take);
@@ -269,12 +327,14 @@ public sealed partial class MainWindow
         if (!CanClearSelectedInput()) return;
         var start = _timeline.SelectedFrame; var length = _timeline.SelectionEnd - start; var take = _timeline.SelectedTake;
         await FlushInputEditsAsync(); await PausePlayback();
+        if (!await ConfirmInputOverwrite(start, take)) return;
         await _execution.EditRangeAsync(start, length, take, ControllerState.Neutral, ControllerState.KnownButtons, 0b111111);
         LoadSelectedInput();
     }
     private async Task ClearLaterInput(int start)
     {
         await FlushInputEditsAsync(); await PausePlayback();
+        if (!await ConfirmInputOverwrite(start + 1, null)) return;
         await _execution.ClearLaterInputAsync(start);
         _timeline.InputCount = _execution.Inputs.Count;
         _timeline.SetSelection(start, start + 1);
@@ -291,17 +351,22 @@ public sealed partial class MainWindow
         await _execution.ClearMarkerAsync(marker.Id);
     }
     private Button TransportButton(string label, string icon, Func<Task> action, Func<bool> enabled)
+        => StyleTransportButton(ActionButton(label, action, enabled), label, icon);
+
+    private static Button StyleTransportButton(Button button, string label, string icon)
     {
-        var button = ActionButton(label, action, enabled); button.FontSize = 12; button.Padding = new Thickness(6, 5);
+        button.FontSize = 12; button.Padding = new Thickness(6, 5);
         button.Background = Brushes.Transparent; button.BorderThickness = new Thickness(0);
         button.Content = Row(new PathIcon { Data = Geometry.Parse(ToolIcons.Paths[icon]), Width = 17, Height = 17, Foreground = StudioTheme.Brush(ThemeColor.Icon) }, Label(label));
+        ToolTip.SetTip(button, label);
         Avalonia.Automation.AutomationProperties.SetName(button, label); return button;
     }
     private Task ZoomTimeline(double multiplier) { _timeline.Zoom(multiplier); return Task.CompletedTask; }
     private void RefreshTimeline()
     {
+        if (_takeActiveButton != null) _takeActiveButton.Content = _execution.Takes.FirstOrDefault(t => t.Id == _timeline.SelectedTake)?.IsActive == true ? "Unmark active" : "Mark active";
         _ = RefreshExperimentMarkerColors();
-        _timelinePreview.Text = $"{(_execution.IsRecordingLive ? "REC · " : "")}{PlaybackPositionText}";
+        _timelinePreview.Text = $"{(_execution.IsTrialPlayback ? "TRIAL · " : _execution.IsRecordingLive ? "REC · " : "")}{PlaybackPositionText}";
         _timelinePreview.Foreground = _execution.IsRecordingLive ? StudioTheme.Brush(ThemeColor.Error) : StudioTheme.Brush(ThemeColor.Text);
         var recording = _execution.IsRecordingLive;
         if (_recordLabel.Text != (recording ? "Stop" : "Record"))
@@ -321,6 +386,8 @@ public sealed partial class MainWindow
         _timeline.Inputs = _execution.Inputs;
         _timeline.InputCount = _timeline.Inputs.Count; _timeline.Position = _execution.Position; _timeline.Current = _execution.IsPreviewCurrent;
         _timeline.PollBoundaries = _execution.PollBoundaries;
+        _timeline.InputTiming = _execution.InputTiming;
+        _timeline.TimelineOffsetMilliseconds = _execution.TimelineOffsetMilliseconds;
         if (recording || _wasRecordingLive)
         {
             var position = checked((int)_timeline.Position);
@@ -330,10 +397,12 @@ public sealed partial class MainWindow
         _wasRecordingLive = recording;
         if (previewMoved) _timeline.RevealPosition();
         _timeline.Takes = _execution.Takes; _timeline.Sections = _execution.Sections; _timeline.Markers = _execution.StateMarkers;
+        _timeline.MemoryEdits = _execution.MemoryEdits;
+        _timeline.TrialPlayback = _execution.IsTrialPlayback;
         _timeline.Tags = _execution.Tags;
+        RefreshTagSearch();
         _timeline.RefreshMarker(); _timeline.Update();
     }
-    private async Task CopyTake() { await _execution.CaptureTakeAsync("Take " + (_execution.Takes.Count + 1), _timeline.SelectedFrame, _timeline.SelectionEnd - _timeline.SelectedFrame); }
     private Task DeleteTake() => DeleteTake(_timeline.SelectedTake);
     private async Task DeleteTake(string? id)
     {
@@ -353,6 +422,7 @@ public sealed partial class MainWindow
     {
         var target = _timeline.SelectedFrame;
         await FlushInputEditsAsync();
+        if (!await ConfirmInputOverwrite(target, null)) return;
         await _execution.ApplyTakeAtCursorAsync(id, target);
         _timeline.InputCount = _execution.Inputs.Count;
         _timeline.SetSelection(target, target + 1);
@@ -362,6 +432,7 @@ public sealed partial class MainWindow
     {
         var take = _timeline.SelectedTake!; var start = _timeline.SelectedFrame; var end = _timeline.SelectionEnd;
         await FlushInputEditsAsync();
+        if (!await ConfirmInputOverwrite(start, null)) return;
         await _execution.UseTakeAsync(take, start, end - start, removeTake: true);
         _timeline.InputCount = _execution.Inputs.Count;
         _timeline.SetSelection(start, end);

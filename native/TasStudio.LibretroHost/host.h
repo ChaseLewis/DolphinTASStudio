@@ -11,6 +11,11 @@ static_assert(sizeof(tas_poll) == 32);
 TAS_API tas_host* tas_create(const char* core, const char* system, const char* saves, int resolution, int dsp_hle);
 TAS_API const char* tas_error(tas_host* host);
 TAS_API int tas_set_option(tas_host* host, const char* key, const char* value);
+// Experimental presentation override, applied on the next advance without rebooting.
+TAS_API int tas_set_render_resolution(tas_host* host, int scale);
+// Optional core capability. Creates a new card from GCI copies without changing the running game.
+TAS_API int tas_create_memory_card(tas_host* host, const char* const* paths, size_t count, const char* destination, int japanese);
+TAS_API int tas_flush_gci_folder(tas_host* host);
 TAS_API void tas_destroy(tas_host* host);
 TAS_API int tas_load(tas_host* host, const char* game);
 // ABI 2: hold pad through the next nonduplicate presentation and stop at a VI boundary.

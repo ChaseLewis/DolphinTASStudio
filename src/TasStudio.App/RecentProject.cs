@@ -8,6 +8,9 @@ public sealed record RecentProject(string Path, DateTimeOffset OpenedUtc, string
 {
     public RecentTake[] TakeSpans { get; init; } = [];
     public string Name => System.IO.Path.GetFileNameWithoutExtension(Path);
+    public static RecentProject From(string path, ProjectSummary project) => new(System.IO.Path.GetFullPath(path), DateTimeOffset.UtcNow,
+        project.GamePath, project.GameHash, project.Position, project.InputCount, project.TakeCount, project.Start)
+        { TakeSpans = project.TakeSpans.Select(t => new RecentTake(t.Name, t.Start, t.Length)).ToArray() };
     public static RecentProject From(string path, FolderProjectContent project) => new(System.IO.Path.GetFullPath(path), DateTimeOffset.UtcNow,
         project.Archive.Metadata.GamePath, project.Archive.Metadata.GameHash, project.Archive.Metadata.Position,
         project.Archive.Metadata.Inputs.Length, project.Takes.Length, project.Archive.Metadata.Start)

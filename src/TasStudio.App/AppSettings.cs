@@ -26,6 +26,7 @@ public static class AppPaths
 }
 
 public enum PadControl { A, B, X, Y, Z, Start, L, R, Up, Down, Left, Right, StickUp, StickDown, StickLeft, StickRight, CUp, CDown, CLeft, CRight, AnalogL, AnalogR }
+public enum SelectionTimingDisplay { MultipleOnly, Always, Never }
 [Flags]
 public enum GamepadButton : ushort
 {
@@ -53,8 +54,11 @@ public sealed class AppSettings
     public string? LastGame { get; set; }
     public TasStudio.Emulation.EmulationConfiguration PlayConfiguration { get; set; } = new();
     public bool WatcherVisible { get; set; }
+    public bool ControllerDisplayClean { get; set; } = true;
+    public string ControllerDisplayBackground { get; set; } = "Theme";
     public double InspectorWidth { get; set; } = 330;
     public double TimelineHeight { get; set; } = 320;
+    public SelectionTimingDisplay TimelineTimingDisplay { get; set; } = SelectionTimingDisplay.MultipleOnly;
     public Dictionary<string, string> ResolvedRoms { get; set; } = [];
     public List<RecentProject> RecentProjects { get; set; } = [];
     public Dictionary<PadControl, Key> Keys { get; set; } = DefaultKeys();
@@ -88,6 +92,7 @@ public sealed class AppSettings
             var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path), JsonOptions) ?? throw new InvalidDataException("Settings are empty.");
             settings.Volume = Math.Clamp(settings.Volume, 0, 100);
             if (!Enum.IsDefined(settings.Theme)) settings.Theme = UiTheme.System;
+            if (!Enum.IsDefined(settings.TimelineTimingDisplay)) settings.TimelineTimingDisplay = SelectionTimingDisplay.MultipleOnly;
             settings.CodeEditorPath = string.IsNullOrWhiteSpace(settings.CodeEditorPath) ? null : settings.CodeEditorPath.Trim();
             settings.ExperimentLibraries = (settings.ExperimentLibraries ?? []).Where(p => !string.IsNullOrWhiteSpace(p))
                 .Select(p => p.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();

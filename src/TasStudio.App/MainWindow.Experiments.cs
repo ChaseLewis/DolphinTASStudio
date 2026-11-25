@@ -31,7 +31,7 @@ public sealed partial class MainWindow
         {
             var experiments = await Task.Run(() => ProjectExperiments.Discover(project));
             if (!string.Equals(project, _experimentMarkerProject, StringComparison.OrdinalIgnoreCase)) return;
-            var states = experiments.Where(e => e.Error == null && e.StateId != null &&
+            var states = experiments.Where(e => e.IsVisible && e.Error == null && e.StateId != null &&
                 string.Equals(e.SourceProject, project, StringComparison.OrdinalIgnoreCase)).Select(e => e.StateId!).ToHashSet();
             if (!_timeline.ExperimentStateIds.SetEquals(states))
             {
@@ -62,12 +62,15 @@ public sealed partial class MainWindow
             item.Click += async (_, e) => { e.Handled = true; await Perform(action); };
             return item;
         }
-        var items = new List<Control> { Action("Create experiment…", () => CreateStateExperiment(state)) };
+        var items = new List<Control> { Action("Create experiment…", () => CreateStateExperiment(state)),
+            Action("All project experiments…", ShowProjectExperiments) };
         var editorItems = new List<MenuItem>();
         try
         {
-            var experiments = _projectPath == null ? [] : ProjectExperiments.Discover(_projectPath);
-            var attach = new MenuItem { Header = "Attach existing experiment", IsEnabled = experiments.Count > 0 };
+            var experiments = _projectPath == null ? [] : ProjectExperiments.Discover(_projectPath).Where(e => e.IsVisible).ToArray();
+            var attached = experiments.Where(e => e.Error == null && e.StateId == state.Id &&
+                _projectPath != null && string.Equals(e.SourceProject, Path.GetFullPath(_projectPath), StringComparison.OrdinalIgnoreCase)).ToArray();
+            var attach = new MenuItem { Header = "Attach existing experiment", IsEnabled = experiments.Length > 0 };
             attach.ItemsSource = experiments.Select(experiment =>
             {
                 var item = Action(experiment.Name, () => AttachStateExperiment(state, experiment.ConfigPath));
@@ -76,7 +79,7 @@ public sealed partial class MainWindow
                 return item;
             }).ToArray();
             items.Add(attach);
-            var rename = new MenuItem { Header = "Rename experiment…", IsEnabled = experiments.Count > 0 };
+            var rename = new MenuItem { Header = "Rename experiment…", IsEnabled = experiments.Length > 0 };
             rename.ItemsSource = experiments.Select(experiment =>
             {
                 var item = Action(experiment.Name, () => RenameStateExperiment(experiment));
@@ -85,23 +88,24 @@ public sealed partial class MainWindow
                 return item;
             }).ToArray();
             items.Add(rename);
-            var remove = new MenuItem { Header = "Remove experiment", IsEnabled = experiments.Count > 0 };
-            remove.ItemsSource = experiments.Select(experiment =>
+            var remove = new MenuItem { Header = "Remove experiment from state", IsEnabled = attached.Length > 0 };
+            remove.ItemsSource = attached.Select(experiment =>
             {
-                var item = Action(experiment.Name, () => RemoveStateExperiment(experiment));
-                ToolTip.SetTip(item, "Remove from project menus; keep code and previous runs.\n" + experiment.ConfigPath);
+                var item = Action(experiment.Name, () => RemoveStateExperiment(state, experiment));
+                ToolTip.SetTip(item, "Detach from this state; keep the experiment available in Attach existing experiment.\n" + experiment.ConfigPath);
                 return item;
             }).ToArray();
             items.Add(remove);
-            foreach (var experiment in experiments.Where(e => e.Error == null && e.StateId == state.Id &&
-                _projectPath != null && string.Equals(e.SourceProject, Path.GetFullPath(_projectPath), StringComparison.OrdinalIgnoreCase)))
+            foreach (var experiment in attached)
             {
                 items.Add(new Separator());
                 items.Add(Action("Run " + experiment.Name, () => RunStateExperiment(state, experiment.ConfigPath)));
+                items.Add(Action("Batch settings — " + experiment.Name, () => ConfigureExperimentBatch(experiment.ConfigPath)));
                 items.Add(Action("Top plays settings — " + experiment.Name, () => ConfigureExperimentTopPlays(experiment.ConfigPath)));
                 items.Add(Action("View top plays — " + experiment.Name, () =>
                 {
-                    ShowExperimentPlays(ProjectExperiments.PreviousBatches(experiment.ConfigPath));
+                    ShowExperimentPlays(ProjectExperiments.PreviousBatches(experiment.ConfigPath), experiment.Name,
+                        () => ProjectExperiments.PreviousBatches(experiment.ConfigPath));
                     return Task.CompletedTask;
                 }));
                 items.Add(Action("Open Folder — " + experiment.Name, () =>
@@ -130,6 +134,43 @@ public sealed partial class MainWindow
         foreach (var item in items) { item.IsVisible = editor != null; ToolTip.SetTip(item, editor); }
     }
 
+    internal Task ShowProjectExperiments()
+    {
+        if (_projectPath == null) return Task.CompletedTask;
+        var project = _projectPath;
+        var window = new ProjectExperimentsWindow(project, () => _execution.StateMarkers,
+            async (state, path) =>
+            {
+                if (_projectPath != project) throw new InvalidOperationException("Reopen the experiment list for the current project.");
+                await Perform(() => AttachStateExperiment(state, path));
+            }, async experiment =>
+            {
+                if (_projectPath != project) throw new InvalidOperationException("Reopen the experiment list for the current project.");
+                await Perform(() => RenameStateExperiment(experiment));
+            },
+            experiment => ShowExperimentPlays(ProjectExperiments.PreviousBatches(experiment.ConfigPath), experiment.Name,
+                () => ProjectExperiments.PreviousBatches(experiment.ConfigPath)),
+            () => RefreshExperimentMarkerColors(force: true), async experiment =>
+            {
+                if (_projectPath != project) throw new InvalidOperationException("Reopen the experiment list for the current project.");
+                await Perform(() => ConfigureExperimentBatch(experiment.ConfigPath));
+            }, CleanExperimentStates);
+        window.Show(this);
+        return Task.CompletedTask;
+    }
+
+    private async Task CleanExperimentStates()
+    {
+        if (_projectPath == null) return;
+        var project = _projectPath;
+        var window = new ExperimentStorageWindow(project, async () =>
+        {
+            if (_projectPath != project) throw new InvalidOperationException("Reopen cleanup for the current project.");
+            return await _execution.GetProtectedStateFilesAsync();
+        });
+        await window.ShowDialog(this);
+    }
+
     private async Task<bool> SaveExperimentSource(StateMarker state)
     {
         await FlushInputEditsAsync();
@@ -151,7 +192,7 @@ public sealed partial class MainWindow
         var libraries = _settings.ExperimentLibraries.ToArray();
         var path = await Task.Run(() => ProjectExperiments.Create(_projectPath!, state.Id, name, libraries));
         await RefreshExperimentMarkerColors(force: true);
-        _status.Text = "Created experiment: " + path;
+        _status.Text = "Created experiment: " + name;
         return path;
     }
 
@@ -164,12 +205,12 @@ public sealed partial class MainWindow
         _status.Text = "Renamed experiment to " + name;
     }
 
-    internal async Task RemoveStateExperiment(ProjectExperiment experiment)
+    internal async Task RemoveStateExperiment(StateMarker state, ProjectExperiment experiment)
     {
         if (_projectPath == null) return;
-        await Task.Run(() => ProjectExperiments.Remove(_projectPath, experiment.ConfigPath));
+        await Task.Run(() => ProjectExperiments.Detach(_projectPath, experiment.ConfigPath, state.Id));
         await RefreshExperimentMarkerColors(force: true);
-        _status.Text = $"Removed {experiment.Name} from the project. Code and previous runs remain in its folder.";
+        _status.Text = $"Detached {experiment.Name} from {state.Name}. It remains available in Attach existing experiment.";
     }
 
     private async Task<string?> PromptExperimentName(string title, string? current)
@@ -212,15 +253,15 @@ public sealed partial class MainWindow
         if (!File.Exists(worker)) throw new FileNotFoundException("Experiment worker is missing. Use a complete published TAS Studio build.", worker);
         if (!await SaveExperimentSource(state)) return;
         var run = await Task.Run(() => ProjectExperiments.PrepareRun(configPath, _projectPath!, state.Id));
-        var window = new ExperimentRunWindow(worker, run, () => ShowExperimentPlays([run.BatchDirectory]));
+        var window = new ExperimentRunWindow(worker, run, () => ShowExperimentPlays([run.BatchDirectory], run.Name));
         window.Show(this);
-        _status.Text = "Experiment started. Results: " + run.BatchDirectory;
+        _status.Text = "Experiment started: " + run.Name;
     }
 
-    private void ShowExperimentPlays(IEnumerable<string> batches)
+    private void ShowExperimentPlays(IEnumerable<string> batches, string? experimentName = null, Func<IEnumerable<string>>? refreshBatches = null)
     {
         ExperimentPlaysWindow? window = null;
-        window = new ExperimentPlaysWindow(batches, (batch, summary, asTake) => ApplyExperimentPlay(batch, summary, window!, asTake));
+        window = new ExperimentPlaysWindow(batches, (batch, summary, asTake) => ApplyExperimentPlay(batch, summary, window!, asTake), experimentName, refreshBatches);
         window.Show(this);
     }
 
@@ -232,6 +273,8 @@ public sealed partial class MainWindow
         {
             await FlushInputEditsAsync();
             var play = await Task.Run(() => ExperimentPlayResults.Load(batch, summary.TrialIndex, summary.SubmissionIndex));
+            play = play with { ExperimentName = summary.ExperimentName ?? play.ExperimentName };
+            if (!asTake && !await ConfirmInputOverwrite(play.Start, null, owner)) return false;
             string? takeId = null;
             async Task Apply(bool allowHistoryMismatch = false)
             {
@@ -241,7 +284,7 @@ public sealed partial class MainWindow
             try { await Apply(); }
             catch (ExperimentPlayHistoryMismatchException)
             {
-                var warning = new ExperimentPlayMismatchWindow(play.Name, play.Start, play.Length, asTake);
+                var warning = new ExperimentPlayMismatchWindow(play.DisplayName, play.Start, play.Length, asTake);
                 if (!await warning.ShowDialog<bool>(owner)) return false;
                 await Apply(allowHistoryMismatch: true);
             }
@@ -251,11 +294,56 @@ public sealed partial class MainWindow
             _timeline.SetSelection(play.Start, play.Start + play.Length, takeId);
             _timeline.RevealSelection();
             LoadSelectedInput();
-            _status.Text = asTake ? $"Added {play.Name} as a take. Active playback unchanged; Undo removes the take."
-                : $"Applied {play.Name} to Active playback. Seek to preview; Undo restores previous inputs.";
+            _status.Text = asTake ? $"Added {play.DisplayName} as a take. Active playback unchanged; Undo removes the take."
+                : $"Applied {play.DisplayName} to Active playback. Seek to preview; Undo restores previous inputs.";
             return true;
         }
         finally { _busy = false; Refresh(); }
+    }
+
+    internal async Task ConfigureExperimentBatch(string configPath)
+    {
+        if (_projectPath == null) return;
+        var project = _projectPath;
+        var current = ExperimentFiles.Read<CSharpExperimentFile>(configPath);
+        var name = ProjectExperiments.DisplayName(configPath);
+        var count = new NumericUpDown { Name = "ExperimentTrialCount", Minimum = 1, Maximum = int.MaxValue,
+            Increment = 1, FormatString = "0", Value = current.Count };
+        var workers = new NumericUpDown { Name = "ExperimentWorkerCount", Minimum = 1, Maximum = 8,
+            Increment = 1, FormatString = "0", Value = current.Parallelism };
+        var note = new TextBlock { Name = "ExperimentWorkerSummary", TextWrapping = Avalonia.Media.TextWrapping.Wrap };
+        var save = new Button { Name = "SaveExperimentBatchSettings", Content = "Save", IsDefault = true };
+        var cancel = new Button { Name = "CancelExperimentBatchSettings", Content = "Cancel", IsCancel = true };
+        var dialog = new Window { Title = name + " — Batch settings", Width = 460, SizeToContent = SizeToContent.Height,
+            CanResize = false, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        void Validate()
+        {
+            save.IsEnabled = count.Value is >= 1 and <= int.MaxValue && workers.Value is >= 1 and <= 8 &&
+                count.Value == decimal.Truncate(count.Value.Value) && workers.Value == decimal.Truncate(workers.Value.Value);
+            var concurrent = save.IsEnabled ? Math.Min((int)count.Value!, (int)workers.Value!) : 0;
+            note.Text = save.IsEnabled ? $"Up to {concurrent} {(concurrent == 1 ? "trial" : "trials")} will run at once. Changes apply to new batches."
+                : "Enter a whole-number trial count and 1–8 workers.";
+        }
+        count.ValueChanged += (_, _) => Validate(); workers.ValueChanged += (_, _) => Validate(); Validate();
+        save.Click += (_, _) => dialog.Close(true); cancel.Click += (_, _) => dialog.Close(false);
+        dialog.Content = new StackPanel { Margin = new Thickness(18), Spacing = 10, Children =
+        {
+            new TextBlock { Text = "Total trials" }, count,
+            new TextBlock { Text = "Concurrent workers" }, workers, note,
+            new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right,
+                Spacing = 8, Children = { cancel, save } }
+        } };
+        _dialogOpen = true;
+        try
+        {
+            if (await dialog.ShowDialog<bool>(this))
+            {
+                var trials = (int)count.Value!; var parallelism = (int)workers.Value!;
+                await Task.Run(() => ProjectExperiments.SetBatchScheduling(project, configPath, trials, parallelism));
+                _status.Text = $"{name}: {trials} trials, up to {parallelism} workers for new batches.";
+            }
+        }
+        finally { _dialogOpen = false; }
     }
 
     private async Task ConfigureExperimentTopPlays(string configPath)

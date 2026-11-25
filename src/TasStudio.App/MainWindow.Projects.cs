@@ -135,6 +135,7 @@ public sealed partial class MainWindow
     }
     internal async Task ShowProjects()
     {
+        if (_movieMode) await ExitMovieModeAsync();
         await _execution.PauseAsync(); _audio.Flush(); await SaveRecoveryNow();
         SetProjectHome(true); RefreshProjectList(); await LoadProjectBanners();
     }
@@ -143,7 +144,9 @@ public sealed partial class MainWindow
     {
         _homeVisible = visible;
         _projectHome.IsVisible = _homeToolbar.IsVisible = visible;
-        _editorToolbar.IsVisible = !visible;
+        _editorToolbar.IsVisible = !visible && !_movieMode;
+        _movieToolbar.IsVisible = !visible && _movieMode && !_execution.IsTakingOver;
+        _takeOverToolbar.IsVisible = !visible && _execution.IsTakingOver;
         _editorWorkspace.IsVisible = !visible && !_execution.IsManualPlay;
         _manualWorkspace.IsVisible = !visible && _execution.IsManualPlay;
         _position.IsVisible = !visible;
@@ -159,15 +162,16 @@ public sealed partial class MainWindow
         }
         UpdateInputAcceptance();
     }
-    private async Task RememberProject(string path, FolderProjectContent? content = null)
+    private void RememberProject(RecentProject recent)
     {
-        content ??= await Task.Run(() => FolderProject.Load(path));
-        var recent = RecentProject.From(path, content);
         _settings.RecentProjects.RemoveAll(p => p.Path.Equals(recent.Path, StringComparison.OrdinalIgnoreCase));
         _settings.RecentProjects.Insert(0, recent);
         _settings.RecentProjects = _settings.RecentProjects.Take(50).ToList();
-        _verification.Remove(path); _settings.Save(); _lastRecentPath = path; RefreshProjectList();
+        _verification.Remove(recent.Path); _settings.Save(); _lastRecentPath = recent.Path; RefreshProjectList();
     }
+    // Opening trusts a state file or ROM whose size and timestamps are unchanged since it was last hashed.
+    // Verify rereads everything and corrects these records.
+    private readonly KnownFileHashes _knownHashes = new(Path.Combine(AppPaths.Data, "file-hashes.json"));
     private async Task VerifyProjects(IEnumerable<RecentProject> projects)
     {
         // ROMs shared by projects are hashed once in this verification pass, never trusted from a previous pass.
@@ -181,7 +185,7 @@ public sealed partial class MainWindow
             _verification[p.Path] = "Checking…"; RefreshProjectList();
             try
             {
-                var content = await ProjectVerification.VerifyAsync(p.Path, identity, _settings.ResolvedRoms, hashes, cancellation.Token);
+                var content = await ProjectVerification.VerifyAsync(p.Path, identity, _settings.ResolvedRoms, hashes, cancellation.Token, _knownHashes);
                 var index = _settings.RecentProjects.FindIndex(r => r.Path == p.Path);
                 if (index >= 0) _settings.RecentProjects[index] = RecentProject.From(p.Path, content) with { OpenedUtc = p.OpenedUtc };
                 _verification[p.Path] = ProjectVerification.BuildWarning(content.Archive.Metadata, identity) ?? "Files, ROM & emulator build verified";
@@ -202,19 +206,38 @@ public sealed partial class MainWindow
             if (!_bannerAttempts.Add(p.GameHash)) continue;
             try
             {
-                var cache = Path.Combine(AppPaths.Data, "Banners", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(p.GameHash))) + ".png");
-                if (File.Exists(cache)) { _banners[p.GameHash] = new Bitmap(cache); continue; }
-                var rom = _settings.ResolvedRoms.GetValueOrDefault(p.GameHash) ?? FolderProject.ResolveRomPath(p.Path, p.GamePath);
-                var pixels = await Task.Run(() => GameCubeBanner.ReadRgba(rom));
-                if (pixels == null) continue;
-                using var bitmap = new WriteableBitmap(new PixelSize(96, 32), new Vector(96, 96), PixelFormat.Rgba8888, AlphaFormat.Unpremul);
-                using (var buffer = bitmap.Lock())
-                    for (var y = 0; y < 32; y++) Marshal.Copy(pixels, y * 96 * 4, buffer.Address + y * buffer.RowBytes, 96 * 4);
-                Directory.CreateDirectory(Path.GetDirectoryName(cache)!); bitmap.Save(cache);
-                _banners[p.GameHash] = new Bitmap(cache);
+                // Browsing recents only reads our small local thumbnails. Never touch
+                // project/ROM paths here: they may live on slow or disconnected drives.
+                var cache = ProjectBannerPath(p.GameHash);
+                var bytes = await Task.Run(() => File.Exists(cache) ? File.ReadAllBytes(cache) : null);
+                if (_closingApproved) return;
+                if (bytes == null || _banners.ContainsKey(p.GameHash)) continue;
+                using var stream = new MemoryStream(bytes);
+                _banners[p.GameHash] = new Bitmap(stream);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException or OverflowException) { /* A missing banner never blocks a project. */ }
         }
         RefreshProjectList();
+    }
+
+    internal static string ProjectBannerPath(string gameHash) => Path.Combine(AppPaths.Data, "Banners",
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(gameHash))) + ".png");
+
+    internal async Task CacheOpenedProjectBanner(string gameHash, string rom)
+    {
+        if (_banners.ContainsKey(gameHash)) return;
+        try
+        {
+            var pixels = await Task.Run(() => GameCubeBanner.ReadRgba(rom));
+            if (pixels == null || _closingApproved || _banners.ContainsKey(gameHash)) return;
+            using var bitmap = new WriteableBitmap(new PixelSize(96, 32), new Vector(96, 96), PixelFormat.Rgba8888, AlphaFormat.Unpremul);
+            using (var buffer = bitmap.Lock())
+                for (var y = 0; y < 32; y++) Marshal.Copy(pixels, y * 96 * 4, buffer.Address + y * buffer.RowBytes, 96 * 4);
+            var cache = ProjectBannerPath(gameHash);
+            Directory.CreateDirectory(Path.GetDirectoryName(cache)!); bitmap.Save(cache);
+            _banners[gameHash] = new Bitmap(cache);
+            RefreshProjectList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException or OverflowException) { }
     }
 }

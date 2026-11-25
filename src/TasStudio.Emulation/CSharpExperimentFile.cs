@@ -7,5 +7,7 @@ public sealed record CSharpExperimentFile(string Name, string SourceProject, str
     ExperimentStart Start = ExperimentStart.Boot, string? StateId = null, long? StartUtcSeconds = null,
     double PrerollSeconds = 0, int PrerollGroups = 0, JsonElement Parameters = default, bool Headless = true)
 {
+    // Identity snapshot in frozen requests; live labels come from experiment.identity.json or the folder.
+    public string? DisplayName { get; init; }
     public ExperimentTopPlays? TopPlays { get; init; }
 }

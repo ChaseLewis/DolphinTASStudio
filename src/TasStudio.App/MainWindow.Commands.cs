@@ -170,21 +170,23 @@ public sealed partial class MainWindow
         await _execution.PauseAsync(); _audio.Flush();
         NewProjectRequest? request;
         _dialogOpen = true;
-        try { request = await new NewProjectDialog(_execution.GamePath ?? _settings.LastGame).ShowDialog<NewProjectRequest?>(this); }
+        try { request = await new NewProjectDialog(_execution.GamePath ?? _settings.LastGame, _execution.IsManualPlay).ShowDialog<NewProjectRequest?>(this); }
         finally { _dialogOpen = false; }
         if (request == null) return;
         if (!await ResolveUnsaved()) return;
         _status.Text = "Creating project…";
-        var options = BackendOptions() with { Configuration = new EmulationConfiguration { StartUtcSeconds = request.StartUtc } };
-        await WithGameLoading(() => _execution.CreateProjectAsync(request.Path, request.Rom, options, request.StatePath));
+        var options = BackendOptions() with { Configuration = new EmulationConfiguration { StartUtcSeconds = request.StartUtc, UseGciFolder = true } };
+        ProjectSummary summary = null!;
+        await WithGameLoading(async () => { summary = await _execution.CreateProjectAsync(request.Path, request.Rom, options, request.StatePath, request.FromCurrentPlay); });
         _projectPath = request.Path; _savedRevision = _execution.Revision; _dirty = false;
         _settings.LastGame = request.Rom;
         DetachWatchDocument();
         StoreWatchesForProject(request.Path);
-        await RememberProject(request.Path);
+        RememberProject(RecentProject.From(request.Path, summary));
         await BeginRecoverySession();
         _timeline.SetSelection(0, 1); _timeline.FirstFrame = 0; LoadSelectedInput();
         ShowEditor();
+        await CacheOpenedProjectBanner(summary.GameHash, request.Rom);
     }
     private async Task OpenProject()
     {
@@ -196,12 +198,13 @@ public sealed partial class MainWindow
     {
         await _execution.PauseAsync(); _audio.Flush();
         if (!await ResolveUnsaved()) return;
-        var content = await Task.Run(() => FolderProject.Load(path));
+        var content = await Task.Run(() => FolderProject.Load(path, _knownHashes));
         var metadata = content.Archive.Metadata;
         var rom = _settings.ResolvedRoms.GetValueOrDefault(metadata.GameHash) ?? FolderProject.ResolveRomPath(path, metadata.GamePath);
+        string? hash;
         while (true)
         {
-            string? hash = null; string? reason = null;
+            hash = null; string? reason = null;
             if (File.Exists(rom))
             {
                 try { hash = await HashRomWithProgress(rom); if (hash == null) return; }
@@ -214,17 +217,22 @@ public sealed partial class MainWindow
             if (await Choice("Locate project ROM", $"{reason}\n\nExpected: {Path.GetFileName(metadata.GamePath)}\nPrevious path: {rom}\n\nSelect the same game image/revision. Your current session will be preserved if you cancel.", "Browse", "Cancel") != "Browse") return;
             var selected = await PickOpen("Locate matching project ROM", GameFiles); if (selected == null) return; rom = selected;
         }
-        await WithGameLoading(() => _execution.LoadProjectAsync(path, BackendOptions(), rom));
+        // Already loaded and hashed above; a second pass over every state file and the ROM adds nothing.
+        await WithGameLoading(() => _execution.LoadProjectAsync(path, BackendOptions(), rom, loaded: content, verifiedGameHash: hash));
         _settings.ResolvedRoms[metadata.GameHash] = rom; _settings.Save();
         _projectPath = content.Legacy ? null : path; _savedRevision = _execution.Revision;
         _dirty = content.Legacy;
         LoadWatchDocument(path + ".watches.json");
         if (content.Legacy) DetachWatchDocument();
-        await BeginRecoverySession();
+        // A project just read from its own folder is already its backup. A legacy import or a recovered
+        // session has no such copy, so those still get one at once.
+        var onDisk = !content.Legacy && !Path.GetFullPath(path).StartsWith(Path.GetFullPath(RecoveryRoot) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        await BeginRecoverySession(alreadySaved: onDisk);
         RestoreProjectTimelineView();
         if (content.Legacy) _status.Text = "Legacy project / replay imported. Save As creates a folder project and preserves the source.";
-        await RememberProject(path, content);
+        RememberProject(RecentProject.From(path, content));
         ShowEditor();
+        await CacheOpenedProjectBanner(metadata.GameHash, rom);
     }
     internal void RestoreProjectTimelineView()
     {
@@ -238,12 +246,12 @@ public sealed partial class MainWindow
         await FlushInputEditsAsync();
         if (_projectPath == null) { await SaveProjectAs(); return; }
         await _execution.PauseAsync(); _audio.Flush();
-        await _execution.SaveProjectAsync(_projectPath);
+        var summary = await _execution.SaveProjectAsync(_projectPath);
         StoreWatchesForProject(_projectPath);
         _dirty = false;
         _savedRevision = _execution.Revision;
         _status.Text = $"Saved project to {_projectPath}";
-        await RememberProject(_projectPath);
+        RememberProject(RecentProject.From(_projectPath, summary));
         await SaveRecoveryNow();
     }
     private async Task SaveProjectAs()
@@ -253,12 +261,12 @@ public sealed partial class MainWindow
         var path = await PickSave("Save TAS Studio project", ProjectFiles, "project.tasproj", "tasproj");
         if (path == null) return;
         if (!File.Exists(path)) path = Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path), Path.GetFileName(path));
-        await _execution.SaveProjectAsync(path);
+        var summary = await _execution.SaveProjectAsync(path);
         StoreWatchesForProject(path);
         _projectPath = path; _dirty = false;
         _savedRevision = _execution.Revision;
         _status.Text = $"Saved project to {path}";
-        await RememberProject(path);
+        RememberProject(RecentProject.From(path, summary));
         await SaveRecoveryNow();
     }
     private async Task<bool> ResolveUnsaved()
@@ -328,7 +336,11 @@ public sealed partial class MainWindow
         Exception? failure = null;
         window.Opened += async (_, _) =>
         {
-            try { var hash = await FolderProject.HashGameAsync(path, cancellation.Token); window.Close(hash); }
+            try
+            {
+                var hash = await Task.Run(() => _knownHashes.HashFile(path, false, cancellation.Token), cancellation.Token);
+                _knownHashes.Save(); window.Close(hash);
+            }
             catch (OperationCanceledException) { window.Close(null); }
             catch (Exception error) { failure = error; window.Close(null); }
         };

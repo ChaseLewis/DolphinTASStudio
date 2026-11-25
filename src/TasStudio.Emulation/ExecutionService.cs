@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using TasStudio.Core;
@@ -22,14 +23,15 @@ public sealed partial class ExecutionService : IDisposable
     private string _gameHash = "";
     private volatile bool _running, _loaded, _hasProject;
     private volatile bool _playbackOnly;
-    public bool IsRecordingLive => _running && _hasProject && !_playbackOnly;
+    public bool IsRecordingLive => _running && _hasProject && !_playbackOnly && !_takingOver;
     public bool IsManualPlay => _loaded && !_hasProject;
     private int _disposed;
     private long _position;
     private long _videoFieldCount;
     private double _elapsedSeconds;
     private long _seekInterruptVersion;
-    private ControllerState[] _publishedInputs = [];
+    private ImmutableList<ControllerState> _publishedInputs = ImmutableList<ControllerState>.Empty;
+    private int _firstChangedInput;
     public bool IsLoaded => _loaded;
     public bool IsRunning => _running;
     public bool HasProject => _hasProject;
@@ -37,7 +39,7 @@ public sealed partial class ExecutionService : IDisposable
     public ulong VideoFieldCount => (ulong)Interlocked.Read(ref _videoFieldCount);
     public double ElapsedSeconds => Volatile.Read(ref _elapsedSeconds);
     public string? GamePath { get; private set; }
-    public IReadOnlyList<ControllerState> Inputs => Array.AsReadOnly(Volatile.Read(ref _publishedInputs));
+    public IReadOnlyList<ControllerState> Inputs => Volatile.Read(ref _publishedInputs);
     public Func<ControllerState> LiveInput { get; set; } = () => ControllerState.Neutral;
     public event Action<VideoFrame>? VideoReady;
     public event Action<short[], int>? AudioReady;
@@ -52,17 +54,17 @@ public sealed partial class ExecutionService : IDisposable
     {
         _writeCheckpoint = writeCheckpoint;
         _backend = backend;
-        _backend.VideoReady += frame => { _latestFrame = frame; if (!_suppressMedia) VideoReady?.Invoke(frame); };
+        _backend.VideoReady += ReceiveVideo;
         _backend.AudioReady += (samples, rate) => { if (!_suppressMedia) AudioReady?.Invoke(samples, rate); };
         _thread = new Thread(Loop) { IsBackground = true, Name = "TAS emulation" };
         _thread.Start();
     }
 
-    public Task LoadGameAsync(string path, BackendOptions options) => Enqueue(() => LoadGame(path, options));
+    public Task LoadGameAsync(string path, BackendOptions options) => Enqueue(() => { RequireNoTakeOver(); LoadGame(path, options); });
     public Task<SessionConfiguration?> GetConfigurationAsync() => Enqueue(() =>
         _loaded && _options != null ? new SessionConfiguration(_options with { Configuration = _options.Configuration?.ValidatedCopy() }, _backend.Identity) : null);
     public Task StopAsync() { InterruptSeek(); return Enqueue(() => { Pause(); _backend.Stop(); ClearProject(); _loaded = false; GamePath = null; Notify("Stopped"); }); }
-    public Task RunAsync() => Enqueue(() => { RequireLoaded(); EnsureCurrent(); _playbackOnly = false; _running = true; Notify(_hasProject ? "Recording live input at timeline end" : "Playing with live controller input"); });
+    public Task RunAsync() => Enqueue(() => { RequireLoaded(); EnsureCurrent(); _playbackOnly = false; _running = true; Notify(_takingOver ? "Take Over Mode — live input is not recorded" : _hasProject ? "Recording live input at timeline end" : "Playing with live controller input"); });
     public Task PlayRecordedAsync() => Enqueue(() =>
     {
         RequireProject(); EnsureCurrent(); _playbackOnly = true;
@@ -90,9 +92,9 @@ public sealed partial class ExecutionService : IDisposable
     public Task ResetAsync() => Enqueue(() => { RequireLoaded(); Pause(); AddEvent(new ExecutionEvent(_backend.Position, ExecutionEventKind.Reset)); Notify("Reset button pressed"); });
     public Task NewProjectAsync(ProjectStartKind startKind = ProjectStartKind.CapturedState) => Enqueue(() =>
     {
-        RequireLoaded(); Pause();
+        RequireLoaded(); RequireNoTakeOver(); Pause();
         var initial = _backend.Capture() with { Position = 0 };
-        _backend.Restore(initial);
+        RestoreBackend(initial);
         _initial = initial;
         _baselineRuntime = CurrentRuntime;
         _projectStart = new(startKind);
@@ -104,7 +106,7 @@ public sealed partial class ExecutionService : IDisposable
 
     public Task SaveStateAsync(string path) => Enqueue(() =>
     {
-        RequireLoaded(); Pause(); EnsureCurrent(); var state = _backend.Capture();
+        RequireLoaded(); RequireNoTakeOver(); Pause(); EnsureCurrent(); var state = _backend.Capture();
         ProjectArchive.Save(path, Metadata(ProjectArchive.StateKind, state), state);
         if (_hasProject) RegisterSavedState(path, state.Position);
         Notify("Saved state: " + Path.GetFileName(path));
@@ -112,37 +114,63 @@ public sealed partial class ExecutionService : IDisposable
 
     public Task LoadStateAsync(string path) => Enqueue(() =>
     {
-        RequireLoaded(); Pause(); var archive = ProjectArchive.Load(path, ProjectArchive.StateKind);
+        RequireLoaded(); RequireNoTakeOver(); Pause(); var archive = ProjectArchive.Load(path, ProjectArchive.StateKind);
         ValidateCompatibility(archive.Metadata);
         if (_hasProject)
         {
             if (archive.Metadata.HistoryHash == null || archive.InitialState.Position > (ulong)_inputs.Count || archive.Metadata.HistoryHash != _history!.At(archive.InitialState.Position))
                 throw new InvalidDataException("This saved state is invalid for the project's input/event history. Seek to regenerate it, or open it outside the project as a new baseline.");
         }
-        _backend.Restore(archive.InitialState);
+        RestoreBackend(archive.InitialState);
         if (_hasProject) _executedHistory = _history!.At(_backend.Position);
         Notify("Loaded state: " + Path.GetFileName(path));
     });
 
-    public Task SaveProjectAsync(string path) => Enqueue(() =>
+    private readonly ProjectStateHashCache _projectStateHashes = new();
+    internal ProjectChunkCache ProjectChunks => _projectStateHashes.Chunks;
+
+    public Task<ProjectSummary> SaveProjectAsync(string path) => Enqueue(() =>
     {
         RequireProject(); Pause();
-        FolderProject.Save(path, Metadata(ProjectArchive.ProjectKind, _initial!), _initial!, _takes, _sections, _savedStates,
-            _checkpoints.Select(c => new CheckpointReference(c.State, c.Seconds, c.Created, c.LastUse)).ToArray());
+        SessionBackup? cardBackup = null;
+        if (_options!.Configuration?.UseGciFolder == true)
+        {
+            if (_backend is IGciFolderBackend card) card.FlushGciFolder();
+            var directory = ProjectMemoryCards.DirectoryFor(path);
+            ProjectMemoryCards.Copy(_options.GciDirectory!, directory);
+            if (!Path.GetFullPath(_options.GciDirectory!).Equals(directory, StringComparison.OrdinalIgnoreCase))
+                cardBackup = CaptureSession();
+        }
+        var metadata = Metadata(ProjectArchive.ProjectKind, _initial!);
+        var summary = ProjectSummary.From(metadata, _takes);
+        FolderProject.Save(path, metadata, _initial!, _takes, _sections, _savedStates,
+            _checkpoints.Select(c => new CheckpointReference(c.State, c.Seconds, c.Created, c.LastUse)).ToArray(), _projectStateHashes);
+        if (cardBackup != null)
+        {
+            _preserveCheckpointFiles = true;
+            try { RestoreSession(cardBackup with { Options = cardBackup.Options with { GciDirectory = ProjectMemoryCards.DirectoryFor(path) } }); }
+            catch { RestoreSession(cardBackup); throw; }
+            finally { _preserveCheckpointFiles = false; }
+        }
         Notify("Saved project: " + Path.GetFileName(path));
+        return summary;
     });
 
     public Task LoadProjectAsync(string path, BackendOptions options, string? relocatedRom = null, ulong? positionOverride = null,
-        EmulationConfiguration? powerOnConfiguration = null, bool requireExactRuntime = false) => Enqueue(() =>
+        EmulationConfiguration? powerOnConfiguration = null, bool requireExactRuntime = false, bool isolatedMemoryCard = false,
+        FolderProjectContent? loaded = null, string? verifiedGameHash = null) => Enqueue(() =>
     {
+        RequireNoTakeOver();
         Pause();
         // Validate the container and content identity before replacing the live session.
-        var content = FolderProject.Load(path);
+        // A caller that has just loaded and verified the project or ROM passes them in rather than paying twice.
+        var content = loaded ?? FolderProject.Load(path);
         var archive = content.Archive;
         var metadata = archive.Metadata;
         var gamePath = relocatedRom ?? FolderProject.ResolveRomPath(path, metadata.GamePath);
         if (!File.Exists(gamePath)) throw new FileNotFoundException("Project game image is missing: " + gamePath);
-        if (HashFile(gamePath) != metadata.GameHash) throw new InvalidDataException("Project game image hash does not match.");
+        var gameHash = verifiedGameHash ?? HashFile(gamePath);
+        if (gameHash != metadata.GameHash) throw new InvalidDataException("Project game image hash does not match.");
         var projectOptions = options with { InternalResolution = metadata.InternalResolution, DspHle = metadata.DspHle, Configuration = metadata.Configuration?.ValidatedCopy() };
         if (powerOnConfiguration is { } boot)
             projectOptions = projectOptions with { Configuration = boot.ValidatedCopy(), InternalResolution = boot.Resolution, DspHle = boot.DspHle };
@@ -150,14 +178,25 @@ public sealed partial class ExecutionService : IDisposable
         if (requireExactRuntime && (coreIdentity != metadata.BackendIdentity ||
             metadata.RuntimeHistory.Any(runtime => runtime.BackendIdentity != coreIdentity)))
             throw new InvalidDataException("Project requires a different emulator build.");
-        // Reopening always gets a new writable profile; raw memory-card contents come from the state.
-        projectOptions = projectOptions with { SaveDirectory = Path.Combine(options.SaveDirectory, "Projects", Guid.NewGuid().ToString("N")), StorageRoot = options.StorageRoot ?? options.SaveDirectory };
+        // Workers restore embedded card contents into a private folder, never the author's live card.
+        projectOptions = projectOptions with { SaveDirectory = Path.Combine(options.SaveDirectory, "Projects", Guid.NewGuid().ToString("N")),
+            StorageRoot = options.StorageRoot ?? options.SaveDirectory, GciDirectory = isolatedMemoryCard ? null : ProjectMemoryCards.DirectoryFor(path) };
+        projectOptions = projectOptions with { GciDirectory = projectOptions.GciDirectory ?? Path.Combine(projectOptions.SaveDirectory, "gci") };
         var rollback = CaptureSession();
         var succeeded = false;
         _preserveCheckpointFiles = true;
         try
         {
-            LoadGame(gamePath, projectOptions);
+            if (powerOnConfiguration != null && metadata.Configuration?.UseGciFolder == true)
+            {
+                // Materialize the project's original card before a worker's fresh boot.
+                // Restore only under its original settings, then stop before changing UTC.
+                var seed = projectOptions with { Configuration = metadata.Configuration, InternalResolution = metadata.InternalResolution, DspHle = metadata.DspHle };
+                LoadGame(gamePath, seed, gameHash);
+                RestoreBackend(archive.InitialState);
+                _backend.Stop(); _loaded = false;
+            }
+            LoadGame(gamePath, projectOptions, gameHash);
             _allowRuntimeMismatch = !requireExactRuntime;
             if (!requireExactRuntime) RememberRuntime(metadata);
             if (powerOnConfiguration != null)
@@ -175,7 +214,7 @@ public sealed partial class ExecutionService : IDisposable
             else
             {
             ValidateCompatibility(metadata);
-            _backend.Restore(archive.InitialState);
+            RestoreBackend(archive.InitialState);
             // The baseline bytes still belong to their original runtime. Keep
             // that identity in saves and history roots so polls/states survive.
             _baselineRuntime = new(metadata.BackendIdentity, metadata.ConfigurationIdentity);
@@ -241,12 +280,13 @@ public sealed partial class ExecutionService : IDisposable
         });
     }
 
-    private void LoadGame(string path, BackendOptions options)
+    private void LoadGame(string path, BackendOptions options, string? knownHash = null)
     {
-        options = options with { StorageRoot = options.StorageRoot ?? options.SaveDirectory, Configuration = options.Configuration?.ValidatedCopy() };
+        options = options with { StorageRoot = options.StorageRoot ?? options.SaveDirectory, Configuration = options.Configuration?.ValidatedCopy(),
+            GciDirectory = options.GciDirectory ?? Path.Combine(options.SaveDirectory, "gci") };
         Pause();
         if (!File.Exists(path)) throw new FileNotFoundException("Game image does not exist.", path);
-        var hash = HashFile(path);
+        var hash = knownHash ?? HashFile(path);
         _backend.Stop(); _loaded = false; GamePath = null; ClearProject();
         _backend.LoadGame(path, options);
         _loaded = true; _options = options; GamePath = Path.GetFullPath(path); _gameHash = hash;
@@ -255,6 +295,12 @@ public sealed partial class ExecutionService : IDisposable
 
     private void Step(ControllerState? suppliedInput = null, bool repairPreview = true)
     {
+        if (_takingOver)
+        {
+            ExecuteInputGroup(checked((int)_backend.Position), suppliedInput ?? LiveInput());
+            Publish();
+            return;
+        }
         if (repairPreview) EnsureCurrent();
         else if (!Current()) throw new InvalidOperationException("Preview predates an input edit — use Seek before advancing");
         var index = checked((int)_backend.Position);
@@ -297,7 +343,13 @@ public sealed partial class ExecutionService : IDisposable
                 Interlocked.Exchange(ref _videoFieldCount, checked((long)_backend.VideoFieldCount));
             }
         }
-        finally { _suppressMedia = false; if (_latestFrame != null) VideoReady?.Invoke(_latestFrame); Publish(); AudioReady?.Invoke([], 0); }
+        finally
+        {
+            _suppressMedia = false;
+            if (_latestFrame != null) VideoReady?.Invoke(_latestFrame);
+            PresentationReady?.Invoke(LatestPresentation);
+            Publish(); AudioReady?.Invoke([], 0);
+        }
     }
 
     // Boundary events execute in insertion order after reaching N, before input N.
@@ -305,7 +357,7 @@ public sealed partial class ExecutionService : IDisposable
     {
         EnsureCurrent();
         ApplyEvent(entry);
-        if (_hasProject) { RememberEdit(); _events.Add(entry); HistoryChanged((int)entry.Position); _executedHistory = _history!.At(_backend.Position); }
+        if (_hasProject && !_takingOver) { RememberEdit(); _events.Add(entry); HistoryChanged((int)entry.Position); _executedHistory = _history!.At(_backend.Position); }
     }
     private void ApplyEvents(ulong position) { foreach (var entry in _events.Where(e => e.Position == position)) ApplyEvent(entry); }
     private void ApplyEvent(ExecutionEvent entry)
@@ -320,7 +372,9 @@ public sealed partial class ExecutionService : IDisposable
 
     private ArchiveMetadata Metadata(string kind, EmulatorSnapshot initial) => new(
         ProjectArchive.FormatVersion, kind, kind == ProjectArchive.ProjectKind ? BaselineRuntime.BackendIdentity : _backend.Identity, GamePath!, _gameHash,
-        _options!.InternalResolution, _options.DspHle, _backend.Position, initial.Position,
+        _options!.InternalResolution, _options.DspHle,
+        // A trial preview can extend past the saved movie; resume within the canonical recording.
+        kind == ProjectArchive.ProjectKind ? Math.Min(_backend.Position, (ulong)_inputs.Count) : _backend.Position, initial.Position,
         Convert.ToHexString(SHA256.HashData(initial.Data)), initial.Preview?.Width ?? 0, initial.Preview?.Height ?? 0,
         kind == ProjectArchive.ProjectKind ? _inputs.ToArray() : [], kind == ProjectArchive.ProjectKind ? _events.ToArray() : [])
         { HistoryHash = _hasProject && kind == ProjectArchive.StateKind ? _history!.At(initial.Position) : null,
@@ -349,8 +403,15 @@ public sealed partial class ExecutionService : IDisposable
 
     private static string HashFile(string path) { using var file = File.OpenRead(path); return Convert.ToHexString(SHA256.HashData(file)); }
     private void RequireLoaded() { if (!_loaded) throw new InvalidOperationException("Open a game first."); }
-    private void RequireProject() { RequireLoaded(); if (!_hasProject) throw new InvalidOperationException("Create or open a TAS project first."); }
-    private void ClearProject() { _initial = null; _projectStart = null; _inputs.Clear(); _events.Clear(); _hasProject = false; ClearCompatibility(); ClearWorkspace(); }
+    private void RequireProject() { RequireLoaded(); RequireNoTakeOver(); if (!_hasProject) throw new InvalidOperationException("Create or open a TAS project first."); }
+    private void ClearProject()
+    {
+        ClearTakeOver();
+        Volatile.Write(ref _renderResolutionOverride, 0);
+        _initial = null; _projectStart = null; _inputs.Clear(); _events.Clear(); _hasProject = false;
+        ClearCompatibility(); ClearWorkspace();
+        _latestFrame = null; _lastPresentedInput = null; Present(null, null, 0);
+    }
     private void InterruptSeek() => Interlocked.Increment(ref _seekInterruptVersion);
     private void Pause()
     {
@@ -375,10 +436,33 @@ public sealed partial class ExecutionService : IDisposable
         Interlocked.Increment(ref _sampleGeneration);
         Interlocked.Exchange(ref _position, checked((long)_backend.Position));
         Interlocked.Exchange(ref _videoFieldCount, checked((long)_backend.VideoFieldCount));
-        if (_publishedRevision != _revision) Volatile.Write(ref _publishedInputs, _inputs.ToArray());
+        // Trial overlays drive the preview, while the editable active row keeps
+        // showing the canonical movie until the trial has restored it.
+        if (!_trialPlayback) PublishTimeline();
         Volatile.Write(ref _elapsedSeconds, _loaded ? Math.Max(0, _backend.EmulatedSeconds - (_hasProject ? _checkpointOrigin : 0)) : 0);
         PublishWorkspace();
         Changed?.Invoke();
+    }
+
+    private void InvalidateTimeline(int firstChanged)
+    {
+        _firstChangedInput = Math.Min(_firstChangedInput, firstChanged);
+        _firstChangedPoll = Math.Min(_firstChangedPoll, firstChanged);
+    }
+
+    private void PublishTimeline()
+    {
+        var start = Math.Min(_firstChangedInput, Math.Min(_publishedInputs.Count, _inputs.Count));
+        if (start != _inputs.Count || _publishedInputs.Count != _inputs.Count)
+        {
+            // Immutable tree nodes preserve old reader snapshots while appends only
+            // replace a path through the tree, rather than copying the whole movie.
+            var inputs = _publishedInputs.RemoveRange(start, _publishedInputs.Count - start)
+                .AddRange(_inputs.Skip(start));
+            Volatile.Write(ref _publishedInputs, inputs);
+        }
+        _firstChangedInput = int.MaxValue;
+        PublishPollBoundaries();
     }
 
     private Task Enqueue(Action action) => Enqueue(() => { action(); return true; });

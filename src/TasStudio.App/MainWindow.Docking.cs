@@ -41,11 +41,14 @@ public sealed partial class MainWindow
     private Control[] BuildViewMenu() =>
     [
         ActionMenu("Game", () => { ShowWorkspacePanel("game"); return Task.CompletedTask; }),
+        ActionMenu("Controller Inputs", () => { ShowWorkspacePanel("controller"); return Task.CompletedTask; }),
         ActionMenu("Timeline", () => { ShowWorkspacePanel("timeline"); return Task.CompletedTask; }),
         ActionMenu("TAS Input · Port 1", () => { ShowWorkspacePanel("input"); return Task.CompletedTask; }),
         ActionMenu("Memory Watcher", () => { ShowWorkspacePanel("watcher"); return Task.CompletedTask; }),
         new Separator(),
         ActionMenu("Game fullscreen    Alt+Enter", () => { ToggleGameFullscreen(); return Task.CompletedTask; }),
+        ActionMenu("Float Game", () => { FloatWorkspacePanel("game"); return Task.CompletedTask; }),
+        ActionMenu("Float Controller Inputs", () => { FloatWorkspacePanel("controller"); return Task.CompletedTask; }),
         ActionMenu("Reset Layout", () => { ResetDockWorkspace(); return Task.CompletedTask; })
     ];
 
@@ -58,6 +61,7 @@ public sealed partial class MainWindow
         _dockFactory = new WorkspaceFactory(new Dictionary<string, StudioPanel>
         {
             ["game"] = Panel("game", "Game", game),
+            ["controller"] = Panel("controller", "Controller Inputs", BuildControllerDisplay(), 240, 200),
             ["timeline"] = Panel("timeline", "Timeline", BuildTimeline(), 520, 260),
             ["input"] = Panel("input", "TAS Input · Port 1", BuildInspector(), 350, 490),
             ["watcher"] = Panel("watcher", "Memory Watcher", BuildWatcher(), 300, 220)
@@ -120,6 +124,7 @@ public sealed partial class MainWindow
 
     internal void ResetDockWorkspace()
     {
+        if (_movieMode) { ReplaceDockWorkspace(_dockFactory.CreateMovieLayout()); SaveDockWorkspace(); return; }
         _input.SetAcceptInput(false);
         foreach (var window in _workspaceWindows.Where(w => w != this).ToArray()) window.Close();
         _dockControl.Layout = null;
@@ -137,9 +142,10 @@ public sealed partial class MainWindow
         {
             var json = WorkspaceFactory.Capture(_dockRoot).ToJson();
             WorkspaceLayout.Parse(json);
-            Directory.CreateDirectory(Path.GetDirectoryName(_layoutPath)!);
-            File.WriteAllText(_layoutPath + ".tmp", json);
-            File.Move(_layoutPath + ".tmp", _layoutPath, true);
+            var path = _movieMode ? MovieLayoutPath : _layoutPath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path + ".tmp", json);
+            File.Move(path + ".tmp", path, true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidDataException)
         { _status.Text = "Could not save workspace layout: " + ex.Message; }
@@ -152,4 +158,36 @@ public sealed partial class MainWindow
     }
 
     internal void CloseAfterCapture() { _closingApproved = true; Close(); }
+
+    private void ReplaceDockWorkspace(WorkspaceLayout layout)
+    {
+        foreach (var window in _workspaceWindows.Where(w => w != this).ToArray()) window.Close();
+        _dockControl.Layout = null;
+        foreach (var panel in _dockFactory.Panels.Values) { panel.Owner = null; panel.OriginalOwner = null; }
+        _dockRoot = _dockFactory.Restore(layout);
+        foreach (var window in _dockRoot.Windows ?? []) ClampFloatingWindow(window);
+        _dockFactory.InitLayout(_dockRoot);
+        _dockControl.Layout = _dockRoot;
+    }
+
+    private void FloatWorkspacePanel(string id)
+    {
+        ShowWorkspacePanel(id);
+        if (_execution.IsManualPlay) return;
+        var panel = _dockFactory.Panels[id];
+        if (_dockFactory.FindRoot(panel) == _dockRoot) _dockFactory.FloatDockable(panel);
+        RefreshWorkspaceTitles();
+    }
+
+    private void RefreshWorkspaceTitles()
+    {
+        foreach (var root in WorkspaceFactory.Walk(_dockRoot).OfType<IRootDock>())
+        foreach (var window in root.Windows ?? [])
+        {
+            var names = window.Layout == null ? [] : WorkspaceFactory.Walk(window.Layout).OfType<StudioPanel>().Select(p => p.Title).ToArray();
+            var title = "Dolphin TAS Studio — " + string.Join(" / ", names);
+            if (window.Title != title) window.Title = title;
+            if (window.Host is Window host && host.Title != title) host.Title = title;
+        }
+    }
 }

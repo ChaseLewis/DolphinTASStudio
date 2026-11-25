@@ -1,0 +1,156 @@
+--- a/Source/Core/Core/HW/GCMemcard/GCMemcardDirectory.cpp
++++ b/Source/Core/Core/HW/GCMemcard/GCMemcardDirectory.cpp
+@@ -7,6 +7,7 @@
+ #include <chrono>
+ #include <cstring>
+ #include <mutex>
++#include <stdexcept>
+ #include <string>
+ #include <string_view>
+ #include <utility>
+@@ -628,6 +629,18 @@
+ void GCMemcardDirectory::FlushToFile()
+ {
+   std::unique_lock l(m_write_mutex);
++#ifdef __LIBRETRO__
++  for (const auto& filename : m_pending_deletions)
++  {
++    if (std::ranges::none_of(m_saves, [&](const auto& save) { return save.m_filename == filename; }) &&
++        File::Exists(filename))
++    {
++      File::Delete(filename + ".deleted");
++      File::Rename(filename, filename + ".deleted");
++    }
++  }
++  m_pending_deletions.clear();
++#endif
+   Memcard::DEntry invalid;
+   for (Memcard::GCIFile& save : m_saves)
+   {
+@@ -709,12 +722,14 @@
+     // simultaneously
+     // this ensures that the save data for all of the current games gci files are stored in the
+     // savestate
++#ifndef __LIBRETRO__
+     const u32 gamecode = Common::swap32(save.m_gci_header.m_gamecode.data());
+     if (gamecode != m_game_id && gamecode != 0xFFFFFFFF && !save.m_save_data.empty())
+     {
+       INFO_LOG_FMT(EXPANSIONINTERFACE, "Flushing savedata to disk for {}", save.m_filename);
+       save.m_save_data.clear();
+     }
++#endif
+   }
+ #if _WRITE_MC_HEADER
+   u8 mc[BLOCK_SIZE * MC_FST_BLOCKS];
+@@ -729,13 +744,62 @@
+   std::unique_lock l(m_write_mutex);
+   m_last_block = -1;
+   m_last_block_address = nullptr;
++#ifdef __LIBRETRO__
++  // A state owns card contents, never a disk destination. Workers and relocated
++  // projects must retain the folder configured for the current instance.
++  std::string directory;
++  p.Do(directory);
++  if (p.IsReadMode())
++  {
++    for (const auto& save : m_saves)
++      if (!save.m_filename.empty())
++        m_pending_deletions.push_back(save.m_filename);
++  }
++#else
+   p.Do(m_save_directory);
++#endif
+   p.Do(m_hdr);
+   p.Do(m_dir1);
+   p.Do(m_dir2);
+   p.Do(m_bat1);
+   p.Do(m_bat2);
+-  p.DoEachElement(m_saves, [](PointerWrap& p_, Memcard::GCIFile& save) { save.DoState(p_); });
++  p.DoEachElement(m_saves, [this](PointerWrap& p_, Memcard::GCIFile& save) {
++#ifdef __LIBRETRO__
++    const bool reading = p_.IsReadMode();
++    const auto original_filename = save.m_filename;
++    const bool original_dirty = save.m_dirty;
++    if (!reading)
++    {
++      if (save.m_gci_header.m_gamecode != Memcard::DEntry::UNINITIALIZED_GAMECODE &&
++          save.m_save_data.empty() && !save.LoadSaveBlocks())
++        throw std::runtime_error("Cannot capture the GCI memory card's save contents.");
++      // Serialize only a basename, making captures independent of profile paths.
++      std::string name, extension;
++      SplitPath(save.m_filename, nullptr, &name, &extension);
++      save.m_filename = name + extension;
++      save.m_dirty = false;
++    }
++    save.DoState(p_);
++    if (!reading)
++    {
++      save.m_filename = original_filename;
++      save.m_dirty = original_dirty;
++    }
++    else if (p_.IsReadMode())
++    {
++      std::string name, extension;
++      SplitPath(save.m_filename, nullptr, &name, &extension);
++      save.m_filename = name.empty() ? "" : m_save_directory + Common::EscapeFileName(name + extension);
++      save.m_dirty = true;
++    }
++#else
++    save.DoState(p_);
++#endif
++  });
++#ifdef __LIBRETRO__
++  if (p.IsReadMode())
++    m_flush_trigger.Set();
++#endif
+ }
+ 
+ void MigrateFromMemcardFile(const std::string& directory_name, ExpansionInterface::Slot card_slot,
+--- a/Source/Core/Core/HW/GCMemcard/GCMemcardDirectory.h
++++ b/Source/Core/Core/HW/GCMemcard/GCMemcardDirectory.h
+@@ -61,6 +61,8 @@
+   std::vector<Memcard::GCIFile> m_saves;
+ 
+   std::string m_save_directory;
++  // Files from a discarded timeline, retired at the next flush.
++  std::vector<std::string> m_pending_deletions;
+   Common::Event m_flush_trigger;
+   std::mutex m_write_mutex;
+   Common::Flag m_exiting;
+--- a/Source/Core/Core/HW/EXI/EXI_DeviceMemoryCard.cpp
++++ b/Source/Core/Core/HW/EXI/EXI_DeviceMemoryCard.cpp
+@@ -557,4 +557,24 @@
+       size * (m_system.GetSystemTimers().GetTicksPerSecond() / MC_TRANSFER_RATE_WRITE),
+       s_et_transfer_complete[m_card_slot], static_cast<u64>(m_card_slot));
+ }
++void CEXIMemoryCard::FlushGciFolder()
++{
++  if (m_device_type == EXIDeviceType::MemoryCardFolder)
++    static_cast<GCMemcardDirectory*>(m_memory_card.get())->FlushToFile();
++}
+ }  // namespace ExpansionInterface
++
++#ifdef __LIBRETRO__
++#ifdef _WIN32
++#define TAS_GCI_EXPORT __declspec(dllexport)
++#else
++#define TAS_GCI_EXPORT __attribute__((visibility("default")))
++#endif
++extern "C" TAS_GCI_EXPORT void dolphin_tas_flush_gci_folder()
++{
++  using namespace ExpansionInterface;
++  auto* device = Core::System::GetInstance().GetExpansionInterface().GetDevice(Slot::A);
++  if (device && device->m_device_type == EXIDeviceType::MemoryCardFolder)
++    static_cast<CEXIMemoryCard*>(device)->FlushGciFolder();
++}
++#endif
+--- a/Source/Core/Core/HW/EXI/EXI_DeviceMemoryCard.h
++++ b/Source/Core/Core/HW/EXI/EXI_DeviceMemoryCard.h
+@@ -54,6 +54,7 @@
+   void DoState(PointerWrap& p) override;
+   void DMARead(u32 addr, u32 size) override;
+   void DMAWrite(u32 addr, u32 size) override;
++  void FlushGciFolder();
+ 
+   // CoreTiming events need to be registered during boot since CoreTiming is DoState()-ed
+   // before ExpansionInterface so we'll lose the save stated events if the callbacks are

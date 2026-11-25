@@ -38,8 +38,9 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<PadButtons, CheckBox> _buttons = [];
     private readonly NumericUpDown[] _axes = Enumerable.Range(0, 6).Select(_ => new NumericUpDown { Minimum = byte.MinValue, Maximum = byte.MaxValue, Width = 110, FormatString = "0" }).ToArray();
     private readonly List<(Control Control, Func<bool> Enabled)> _availability = [];
-    private VideoFrame? _pendingVideo;
+    private PlaybackPresentation? _pendingVideo;
     private bool _presentingVideo;
+    private int _videoPresentationGeneration;
     private WriteableBitmap? _bitmap;
     private string? _projectPath;
     private bool _busy, _dirty, _closingApproved, _seeking;
@@ -52,6 +53,7 @@ public sealed partial class MainWindow : Window
         _execution = execution ?? new(new DolphinBackend());
         string? warning = null;
         _settings = settings ?? AppSettings.Load(out warning);
+        _timeline.TimingDisplay = _settings.TimelineTimingDisplay;
         StudioTheme.Apply(_settings.Theme);
         Title = ApplicationTitle;
         Width = 1360; Height = 920; MinWidth = 1060; MinHeight = 720;
@@ -61,8 +63,9 @@ public sealed partial class MainWindow : Window
         InitializeUpdates();
         InitializeRecovery();
         _input.Configure(_settings);
-        _execution.LiveInput = () => _execution.IsManualPlay ? _input.Read() : _turboInput.Apply(_input.Read(), _execution.Position);
-        _execution.VideoReady += frame => Interlocked.Exchange(ref _pendingVideo, frame);
+        _execution.LiveInput = () => _execution.IsManualPlay || _execution.IsTakingOver ? _input.Read() : _turboInput.Apply(_input.Read(), _execution.Position);
+        _execution.PresentationReady += frame => Interlocked.Exchange(ref _pendingVideo, frame);
+        _pendingVideo = _execution.LatestPresentation;
         _execution.AudioReady += _audio.Add;
         _execution.AudioSourceChanged += _audio.SetSource;
         _execution.StatusChanged += message => Dispatcher.UIThread.Post(() => _status.Text = message);
@@ -75,7 +78,7 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) => { foreach (var banner in _banners.Values) banner.Dispose(); };
         Opened += async (_, _) =>
         {
-            if (!_presentingVideo) { _presentingVideo = true; RequestAnimationFrame(PresentVideo); }
+            if (!_presentingVideo) { _presentingVideo = true; RestartVideoPresentation(); }
             _timer.Start();
             if (_homeVisible) SetProjectHome(true);
             await LoadProjectBanners();
@@ -85,7 +88,9 @@ public sealed partial class MainWindow : Window
             if (romIndex >= 0 && romIndex + 1 < args.Length) await Perform(() => OpenGamePath(args[romIndex + 1]));
             var projectIndex = Array.IndexOf(args, "--project");
             if (projectIndex >= 0 && projectIndex + 1 < args.Length) await Perform(() => OpenProjectPath(args[projectIndex + 1]));
-            if (args.Contains("--autoplay") && _execution.IsLoaded) await Perform(() => _execution.RunAsync());
+            if (args.Contains("--movie") && _execution.HasProject) await Perform(() => EnterMovieModeAsync());
+            else if (args.Contains("--autoplay") && _execution.IsLoaded)
+                await Perform(() => _execution.HasProject ? _execution.PlayRecordedAsync() : _execution.RunAsync());
             var updatesCaptureIndex = Array.IndexOf(args, "--updates-screenshot");
             if (updatesCaptureIndex >= 0 && updatesCaptureIndex + 1 < args.Length)
             {
@@ -140,20 +145,41 @@ public sealed partial class MainWindow : Window
         _projectStatus.Text = _execution.HasProject ? $"{(_projectPath == null ? "Untitled project" : Path.GetFileName(_projectPath))}{(_dirty ? " • unsaved" : "")}   |   {_execution.PollBoundaries[^1]:N0} polls · {_execution.Inputs.Count:N0} frame groups" : _execution.IsManualPlay ? "PLAY · Live controller · Persistent memory card in Slot A" : "Open a game to play, or create a TAS project";
         Title = $"{ApplicationTitle}{(_execution.GamePath is { } game ? " — " + Path.GetFileNameWithoutExtension(game) : "")}{(_dirty ? " *" : "")}";
         foreach (var (control, enabled) in _availability) control.IsEnabled = !_busy && enabled();
-        if (!_execution.IsManualPlay) { RefreshTimeline(); RefreshInputEditorStatus(); }
+        if (!_execution.IsManualPlay && !_movieMode) { RefreshTimeline(); RefreshInputEditorStatus(); }
+        RefreshMovieMode(); RefreshWorkspaceTitles();
         RefreshRecoveryStatus();
         RefreshWatcherStatus();
         _position.Text += _execution.IsPreviewCurrent ? "" : "  • Preview predates edit — seek to update";
     }
 
-    private void PresentVideo(TimeSpan timestamp)
+    private void RestartVideoPresentation()
     {
-        if (!_presentingVideo) return;
+        if (_presentingVideo) QueueVideoPresentation(++_videoPresentationGeneration);
+    }
+
+    private void QueueVideoPresentation(int generation)
+    {
+        // OBS may capture a floating panel while the main editor is minimized.
+        // Drive both views from one visible host's render clock, with one pending frame pair.
+        var host = GameHostWindow;
+        if (host == null || !host.IsVisible || host.WindowState == WindowState.Minimized)
+            host = _workspaceWindows.FirstOrDefault(w => w.IsVisible && w.WindowState != WindowState.Minimized) ?? this;
+        host.RequestAnimationFrame(timestamp => PresentVideo(timestamp, generation));
+    }
+
+    private void PresentVideo(TimeSpan timestamp, int generation)
+    {
+        if (!_presentingVideo || generation != _videoPresentationGeneration) return;
         // Video follows the render clock; inspector/status work remains on its 33 ms timer.
         // Keep only the newest frame if the UI falls behind, without queuing stale pictures.
         var frame = Interlocked.Exchange(ref _pendingVideo, null);
-        if (frame != null) ShowFrame(frame);
-        RequestAnimationFrame(PresentVideo);
+        if (frame != null)
+        {
+            if (frame.Video != null) ShowFrame(frame.Video);
+            else _viewport.Source = _manualViewport.Source = null;
+            PresentController(frame);
+        }
+        QueueVideoPresentation(generation);
     }
 
     private unsafe void ShowFrame(VideoFrame frame)
@@ -187,6 +213,10 @@ public sealed partial class MainWindow : Window
     private async void HandleKeyDown(object? sender, KeyEventArgs e)
     {
         if (_homeVisible || _dialogOpen || e.Handled) return;
+        if (_execution.IsTakingOver) { await HandleTakeOverKey(e); return; }
+        if (_movieMode) { await HandleMovieKey(e); return; }
+        if (e.Key == Key.Escape && _seeking)
+        { e.Handled = true; await _execution.PauseAsync(); return; }
         if (e.Key == Key.Escape && _timeline.CancelSelectionDrag())
         { e.Handled = true; return; }
         if (e.Key == Key.Escape && _advanceHeld)
@@ -204,6 +234,8 @@ public sealed partial class MainWindow : Window
         if (e.Key == Key.F10 && e.KeyModifiers == KeyModifiers.None && _execution.IsLoaded)
         { e.Handled = true; await Perform(StepNeutral); return; }
         if (IsEditingText(sender as Window ?? this)) return;
+        if (e.Key == Key.F2 && e.KeyModifiers == KeyModifiers.None && _timeline.IsFocused && _timeline.SelectedTake != null)
+        { e.Handled = true; await Perform(() => RenameTake(_timeline.SelectedTake)); return; }
         if (TryMoveTimelineCursor(sender as Window ?? this, e)) return;
         if (e.Key == Key.D && e.KeyModifiers == (KeyModifiers.Control | KeyModifiers.Shift))
         { e.Handled = true; ToggleGameWindow(); return; }
@@ -237,6 +269,7 @@ public sealed partial class MainWindow : Window
         if (_busy) return;
         await Perform(async () =>
         {
+            if (_movieMode) await ExitMovieModeAsync();
             await _execution.PauseAsync();
             _audio.Flush();
             if (!await ResolveUnsaved()) { Program.RestartForUpdate = false; return; }

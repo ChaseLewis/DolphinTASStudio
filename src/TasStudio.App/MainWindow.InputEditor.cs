@@ -26,6 +26,8 @@ public sealed partial class MainWindow
     private ControllerState _pendingTasInput = ControllerState.Neutral;
     private long _inspectorRevision = -1;
     private long _inspectorSelectionVersion;
+    private long _approvedEditorSelection = -1, _rejectedEditorSelection = -1;
+    private ulong _approvedEditorPosition;
     private bool _inspectorReloadPending;
     private Control BuildInspector()
     {
@@ -228,14 +230,34 @@ public sealed partial class MainWindow
     }
     private void EditorChanged(PadButtons buttons, int axes, (int Start, int Length, string? Take, long Version)? capturedTarget = null)
     {
-        if (_loadingInspector || !_execution.IsLoaded) return;
+        if (_loadingInspector || !_execution.IsLoaded || _execution.IsTrialPlayback || _dialogOpen) return;
         if (UsesControllerInput || _advanceHeld) { RefreshControllerInput(); return; }
         var target = capturedTarget ?? (_timeline.SelectedFrame, _timeline.SelectionEnd - _timeline.SelectedFrame, _timeline.SelectedTake, _inspectorSelectionVersion);
         var value = ShownInput(_pendingTasInput);
         if (target.Take == null) _pendingTasInput = value;
         if (!_execution.HasProject || target.Start < 0 || (target.Take == null && target.Start > _execution.Inputs.Count)) return;
-        var task = _execution.EditRangeAsync(target.Start, target.Length, target.Take, value, buttons, axes);
+        // Keep immediate edits queued before an immediate save; only old edits wait on a dialog.
+        var task = _execution.InputAgeSeconds(target.Start) <= 60 ||
+            (_approvedEditorSelection == target.Version && _approvedEditorPosition == _execution.Position)
+            ? _execution.EditRangeAsync(target.Start, target.Length, target.Take, value, buttons, axes)
+            : ApplyEditorEdit(target, value, buttons, axes, _pendingInputEdits);
         _pendingInputEdits = ObserveInputEdit(task, target.Version, _pendingInputEdits);
+    }
+    private async Task ApplyEditorEdit((int Start, int Length, string? Take, long Version) target, ControllerState value,
+        PadButtons buttons, int axes, Task previous)
+    {
+        await previous;
+        if (_rejectedEditorSelection == target.Version) return;
+        if (_approvedEditorSelection != target.Version || _approvedEditorPosition != _execution.Position)
+        {
+            if (!await ConfirmInputOverwrite(target.Start, target.Take))
+            {
+                _rejectedEditorSelection = target.Version; LoadSelectedInput(); return;
+            }
+            _approvedEditorSelection = target.Version;
+            _approvedEditorPosition = _execution.Position;
+        }
+        await _execution.EditRangeAsync(target.Start, target.Length, target.Take, value, buttons, axes);
     }
     private async Task ObserveInputEdit(Task edit, long selectionVersion, Task previous)
     {
@@ -265,6 +287,7 @@ public sealed partial class MainWindow
         IReadOnlyList<ControllerState> source = take?.Inputs ?? _execution.Inputs; var offset = take?.Start ?? 0;
         _selectedInput = start >= offset && start < end && end <= offset + source.Count ? start : -1;
         _selectionLabel.Text = start > source.Count + offset ? $"No recorded input · group {start}" : _selectedInput < 0 ? "Pending next frame group" : $"{take?.Name ?? "Active playback"} · groups [{start}, {end})";
+        ToolTip.SetTip(_selectionLabel, take?.Provenance);
         if (_timeline.SelectedTake != null && _selectedInput < 0) _selectionLabel.Text = "Select inputs inside this candidate to edit it.";
         if (UsesControllerInput || (_advanceHeld && AuthoringNewInput))
         {
@@ -274,16 +297,17 @@ public sealed partial class MainWindow
             RefreshControllerInput(); UpdateExecutionTargetLabel();
             return;
         }
-        var selected = _selectedInput < 0 ? new[] { start > source.Count + offset ? ControllerState.Neutral : _pendingTasInput } : source.Skip(start - offset).Take(end - start).ToArray();
+        var selected = _selectedInput < 0
+            ? new InputSelectionSummary(start > source.Count + offset ? ControllerState.Neutral : _pendingTasInput)
+            : InputSelectionSummary.Read(source, start - offset, end - start);
         _loadingInspector = true;
-        foreach (var (button, check) in _buttons)
+        try
         {
-            var values = selected.Select(s => s.Buttons.HasFlag(button)).Distinct().ToArray();
-            check.IsChecked = values.Length == 1 ? values[0] : null;
+            foreach (var (button, check) in _buttons) check.IsChecked = selected.Button(button);
+            for (var i = 0; i < _axes.Length; i++) _axes[i].Value = selected.Axes[i];
         }
-        for (var i = 0; i < _axes.Length; i++)
-        { var index = i; var values = selected.Select(s => AxisValues(s)[index]).Distinct().ToArray(); _axes[i].Value = values.Length == 1 ? values[0] : null; }
-        _loadingInspector = false; RefreshStickGraphics(); _inspectorRevision = _execution.Revision;
+        finally { _loadingInspector = false; }
+        RefreshStickGraphics(); _inspectorRevision = _execution.Revision;
         UpdateExecutionTargetLabel();
     }
     private void UpdateExecutionTargetLabel()
@@ -313,7 +337,8 @@ public sealed partial class MainWindow
         var turboDown = _turboInput.Apply(ControllerState.Neutral, _execution.Position).Buttons;
         foreach (var (button, check) in _buttons)
             TurboCheckBox.SetPhase(check, EditingAtPreview && _turboInput.Buttons.HasFlag(button), AuthoringNewInput ? turboDown.HasFlag(button) : check.IsChecked == true);
-        var editable = _timeline.SelectedFrame <= _execution.Inputs.Count;
+        var editable = !_execution.IsTrialPlayback && !_dialogOpen &&
+            (_timeline.SelectedTake != null ? CanClearSelectedInput() : _timeline.SelectedFrame <= _execution.Inputs.Count);
         _manualInputControls.IsEnabled = editable && !UsesControllerInput && !_advanceHeld;
         foreach (var check in _buttons.Values) check.IsEnabled = editable;
         ToolTip.SetTip(_useController, $"{_input.DeviceStatus}. Preview live mapped input; new frames sample it on advance. Turn off to view or edit selected recorded input. Configure the device in Controllers.");

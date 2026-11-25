@@ -7,7 +7,7 @@ using TasStudio.Emulation;
 
 namespace TasStudio.Dolphin;
 
-public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend, IGameCubeMovieBootBackend
+public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend, IGameCubeMovieBootBackend, IRenderResolutionBackend, IGameCubeMemoryCardBackend, IGciFolderBackend
 {
     private const string IdentityPrefix = "dolphin-tas-abi3/";
     private const int MaximumStateBytes = 256 * 1024 * 1024;
@@ -17,7 +17,9 @@ public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend, IG
     private const int NoExiDevice = 255;
     private nint _host;
     private FileStream? _profileLease;
+    private FileStream? _gciLease;
     private ulong _position;
+    private int _bootResolution;
     private ulong _lastVideoSequence;
     private VideoFrame? _preview;
     private readonly short[] _audio = new short[AudioBufferSamples];
@@ -27,6 +29,7 @@ public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend, IG
     public InputPollFrame? LastInputPollFrame { get; private set; }
     public string? ConfigurationIdentity { get; private set; }
     public double EmulatedSeconds => IsLoaded ? Native.tas_ticks(_host) / 486000000.0 : 0;
+    public double? EmulatedTicksPerSecond => 486000000;
     public bool IsLoaded => _host != 0;
     public ulong Position => _position;
     public ulong VideoFieldCount => IsLoaded ? Native.tas_fields(_host) : 0;
@@ -58,6 +61,14 @@ public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend, IG
         _profileLease = new FileStream(Path.Combine(profileDirectory, "session.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         try
         {
+            var gciFolder = configuration?.UseGciFolder == true;
+            var gciDirectory = Path.GetFullPath(options.GciDirectory ?? Path.Combine(profileDirectory, "gci"));
+            if (gciFolder)
+            {
+                if (gciDirectory.IndexOfAny(['\r', '\n']) >= 0) throw new InvalidDataException("Invalid GCI folder path.");
+                Directory.CreateDirectory(gciDirectory);
+                _gciLease = new FileStream(Path.Combine(gciDirectory, ".studio-card.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
             var configDirectory = Path.Combine(profileDirectory, "User", "Config");
             if (configuration != null && Directory.Exists(configDirectory))
             {
@@ -72,7 +83,8 @@ public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend, IG
             Directory.CreateDirectory(configDirectory);
             // This is exclusively the application's isolated profile; never the user's Dolphin profile.
             File.WriteAllText(Path.Combine(configDirectory, "Dolphin.ini"),
-                $"[Core]\nCPUThread = False\nEnableCustomRTC = True\nCustomRTCValue = {configuration?.StartUtcSeconds ?? InitialRtcEpoch}\nSlotA = {RawMemoryCardDevice}\nSlotB = {NoExiDevice}\nMemoryCardSize = {configuration?.MemoryCardSizeOverride ?? -1}\n[Interface]\nConfirmStop = False\n");
+                $"[Core]\nCPUThread = False\nEnableCustomRTC = True\nCustomRTCValue = {configuration?.StartUtcSeconds ?? InitialRtcEpoch}\nSlotA = {(gciFolder ? 8 : RawMemoryCardDevice)}\nSlotB = {NoExiDevice}\nMemoryCardSize = {configuration?.MemoryCardSizeOverride ?? -1}\n" +
+                (gciFolder ? $"GCIFolderAPathOverride = {gciDirectory.Replace('\\', '/')}\n" : "") + "[Interface]\nConfirmStop = False\n");
             Identity = InspectIdentity(options);
             ConfigurationIdentity = configuration == null ? null : ConfigurationHash(configuration, options);
             _host = Native.tas_create(options.CorePath, options.SystemDirectory, options.SaveDirectory,
@@ -86,6 +98,8 @@ public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend, IG
                     Check(Native.tas_set_option(_host, key, "disabled"));
             }
             Check(Native.tas_load(_host, path));
+            if (gciFolder) Check(Native.tas_flush_gci_folder(_host));
+            _bootResolution = options.InternalResolution;
             _position = 0;
             PublishMedia();
         }
@@ -115,6 +129,18 @@ public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend, IG
 
     public void Step(ControllerState input)
         => StepCore(input, null);
+
+    public void CreateMemoryCard(IReadOnlyList<string> saves, string destination, bool japanese)
+    {
+        RequireLoaded();
+        var paths = new nint[saves.Count];
+        try
+        {
+            for (var i = 0; i < paths.Length; i++) paths[i] = Marshal.StringToCoTaskMemUTF8(saves[i]);
+            Check(Native.tas_create_memory_card(_host, paths, (nuint)paths.Length, destination, japanese ? 1 : 0));
+        }
+        finally { foreach (var path in paths) if (path != 0) Marshal.FreeCoTaskMem(path); }
+    }
 
     public void ReplayInputPollFrame(InputPollFrame frame)
     {
@@ -147,6 +173,15 @@ public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend, IG
     }
 
     public void Reset() { RequireLoaded(); Check(Native.tas_reset(_host)); }
+
+    public void SetRenderResolution(int? scale)
+    {
+        RequireLoaded();
+        if (scale is < 1 or > 4) throw new ArgumentOutOfRangeException(nameof(scale));
+        try { Check(Native.tas_set_render_resolution(_host, scale ?? _bootResolution)); }
+        catch (EntryPointNotFoundException)
+        { throw new NotSupportedException("Experimental render resolution requires an updated native Dolphin runtime. Rebuild the native runtime."); }
+    }
 
     public EmulatorSnapshot Capture()
     {
@@ -190,6 +225,8 @@ public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend, IG
     public GameCubeMovieBoot ExportMovieBoot(EmulatorSnapshot initial, string gamePath, BackendOptions options)
     {
         RequireLoaded();
+        if (options.Configuration?.UseGciFolder == true)
+            throw new NotSupportedException("Dolphin movie export currently requires a raw memory card project.");
         // Check capability before changing the running session (older ABI 3 cores can still play).
         ReadBootPolls();
         var backup = Capture();
@@ -241,9 +278,12 @@ public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend, IG
         if (_host != 0) Native.tas_destroy(_host);
         _host = 0; _position = 0; _lastVideoSequence = 0; _preview = null;
         _profileLease?.Dispose(); _profileLease = null;
+        _gciLease?.Dispose(); _gciLease = null;
         AudioReady?.Invoke([], 0);
     }
     public void Dispose() => Stop();
+
+    public void FlushGciFolder() { RequireLoaded(); Check(Native.tas_flush_gci_folder(_host)); }
 
     public IAudioSource StartRealtimePlayback()
     {
@@ -311,6 +351,9 @@ public sealed class DolphinBackend : IEmulatorBackend, IRealtimeAudioBackend, IG
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern nint tas_create([MarshalAs(UnmanagedType.LPUTF8Str)] string core, [MarshalAs(UnmanagedType.LPUTF8Str)] string system, [MarshalAs(UnmanagedType.LPUTF8Str)] string saves, int resolution, int dspHle);
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern nint tas_error(nint host);
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern int tas_set_option(nint host, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, [MarshalAs(UnmanagedType.LPUTF8Str)] string value);
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern int tas_set_render_resolution(nint host, int scale);
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern int tas_create_memory_card(nint host, [In] nint[] paths, nuint count, [MarshalAs(UnmanagedType.LPUTF8Str)] string destination, int japanese);
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern int tas_flush_gci_folder(nint host);
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern void tas_destroy(nint host);
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern int tas_load(nint host, [MarshalAs(UnmanagedType.LPUTF8Str)] string game);
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] public static extern int tas_step(nint host, in ControllerState input);

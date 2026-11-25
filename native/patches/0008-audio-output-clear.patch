@@ -1,0 +1,13 @@
+diff --git a/Source/Core/AudioCommon/Mixer.cpp b/Source/Core/AudioCommon/Mixer.cpp
+--- a/Source/Core/AudioCommon/Mixer.cpp
++++ b/Source/Core/AudioCommon/Mixer.cpp
+@@ -78,6 +78,9 @@ void Mixer::MixerFifo::ClearOutput()
+   m_current_index = 0;
+   m_front = {};
+   m_back = {};
++  // Gap filling can revisit retained granules even after resetting the cursors.
++  // Discard their samples too, so a restore/resume cannot replay old output.
++  m_queue = {};
+   m_queue_head.store(0);
+   m_queue_tail.store(0);
+   m_queue_fading.store(false);

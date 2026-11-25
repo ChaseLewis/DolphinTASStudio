@@ -4,12 +4,13 @@ public sealed partial class ExecutionService
 {
     public Task ConfigureCheckpointsAsync(CheckpointPolicy policy) => Enqueue(() =>
     {
+        RequireNoTakeOver();
         policy.Validate();
         _checkpointPolicy = policy; _lastCheckpointAttempt = double.NaN; TrimCheckpoints(); Interlocked.Increment(ref _revision);
         Notify("Checkpoint settings updated");
     });
 
-    public Task ApplyConfigurationAsync(EmulationConfiguration configuration, CheckpointPolicy checkpoints, bool forceRestart = false)
+    public Task ApplyConfigurationAsync(EmulationConfiguration configuration, CheckpointPolicy checkpoints, bool forceRestart = false, string? gciDirectory = null)
     {
         var requested = configuration.ValidatedCopy(); checkpoints.Validate();
         return Enqueue(() =>
@@ -22,6 +23,7 @@ public sealed partial class ExecutionService
             var backup = CaptureSession()!;
             var succeeded = false;
             var options = _options! with { Configuration = requested, InternalResolution = requested.Resolution, DspHle = requested.DspHle,
+                GciDirectory = gciDirectory ?? _options.GciDirectory,
                 SaveDirectory = Path.Combine(_options.StorageRoot ?? _options.SaveDirectory, "ConfigurationRuns", Guid.NewGuid().ToString("N")) };
             _preserveCheckpointFiles = true;
             try

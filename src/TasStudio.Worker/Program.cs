@@ -22,6 +22,14 @@ internal static class Program
 
     private static async Task<int> RunCommandAsync(string[] args)
     {
+        if (args.Length is 2 or 3 && args[0] == "clean-batch" && (args.Length == 2 || args[2] == "--dry-run"))
+        {
+            var preview = args.Length == 3;
+            var cleanup = ExperimentStorage.CleanBatch(args[1], Console.WriteLine, preview);
+            if (preview) Console.WriteLine($"Would clean {cleanup.Files} files, {cleanup.Bytes / (1024.0 * 1024):F1} MiB.");
+            if (cleanup.InUse) Console.WriteLine("This batch is still in use; temporary files were retained.");
+            return cleanup.Error == null && !cleanup.InUse ? 0 : 1;
+        }
         if (args.Length == 2 && args[0] == "clean-csharp")
         {
             var count = await ExperimentRunner.CleanAsync(args[1], Console.WriteLine, CancellationToken.None);
@@ -56,7 +64,7 @@ internal static class Program
             catch (OperationCanceledException) { Console.Error.WriteLine("Batch cancelled."); return 2; }
             catch (Exception error) { Console.Error.WriteLine(error.Message); return 1; }
         }
-        Console.Error.WriteLine("Usage: TasStudio.Worker <job.json> | new-csharp <project.tasproj> <new-workspace> [state-id] | run-csharp <experiment.tascsharp.json> <new-output-directory> | resume-csharp <batch-directory> | clean-csharp <batch-directory>");
+        Console.Error.WriteLine("Usage: TasStudio.Worker <job.json> | new-csharp <project.tasproj> <new-workspace> [state-id] | run-csharp <experiment.tascsharp.json> <new-output-directory> | resume-csharp <batch-directory> | clean-csharp <batch-directory> | clean-batch <batch-directory> [--dry-run]");
         return 2;
     }
 }

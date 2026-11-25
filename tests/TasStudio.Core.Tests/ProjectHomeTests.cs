@@ -13,6 +13,59 @@ namespace TasStudio.Core.Tests;
 public sealed class ProjectHomeTests
 {
     [AvaloniaFact]
+    public async Task BrowsingRecentsDoesNotExtractBannersUntilThatProjectIsOpened()
+    {
+        using var files = new TestWorkspace();
+        var image = new byte[0x2200];
+        void Word(int offset, uint value) => BinaryPrimitives.WriteUInt32BigEndian(image.AsSpan(offset), value);
+        Word(0x1c, 0xc2339f3d); Word(0x424, 0x500); Word(0x428, 40); Word(0x508, 2);
+        Word(0x510, 0x600); Word(0x514, 0x1820); "opening.bnr\0"u8.CopyTo(image.AsSpan(0x518));
+        "BNR1"u8.CopyTo(image.AsSpan(0x600)); File.WriteAllBytes(files.GamePath, image);
+        var first = new RecentProject(files.FilePath("first.tasproj"), DateTimeOffset.UtcNow, files.GamePath,
+            Guid.NewGuid().ToString("N"), 0, 0, 0, null);
+        var second = first with { Path = files.FilePath("second.tasproj"), GameHash = Guid.NewGuid().ToString("N") };
+        var main = new MainWindow(["--layout-file", files.FilePath("layout.json")], new AppSettings { RecentProjects = [first, second] });
+        var firstBanner = MainWindow.ProjectBannerPath(first.GameHash);
+        var secondBanner = MainWindow.ProjectBannerPath(second.GameHash);
+        try
+        {
+            // Await the home work directly so the absence of extraction isn't a timing assertion.
+            await main.ShowProjects();
+            Assert.False(File.Exists(firstBanner)); Assert.False(File.Exists(secondBanner));
+            main.Show(); main.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            await main.CacheOpenedProjectBanner(first.GameHash, files.GamePath);
+            Assert.True(File.Exists(firstBanner)); Assert.False(File.Exists(secondBanner));
+            await main.ShowProjects();
+            Assert.False(File.Exists(secondBanner));
+        }
+        finally
+        {
+            main.CloseAfterCapture();
+            File.Delete(firstBanner); File.Delete(secondBanner);
+        }
+    }
+
+    [Fact]
+    public void StartupRecoveryCheckOnlyProbesSessionMarkersWithoutReadingManifests()
+    {
+        using var files = new TestWorkspace();
+        var root = files.FilePath("recovery"); var session = Path.Combine(root, "session");
+        Directory.CreateDirectory(session);
+        var manifest = Path.Combine(session, "recovery.tasproj");
+        using var lockedManifest = new FileStream(manifest, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+        Assert.False(MainWindow.HasUncleanRecovery(root));
+        var marker = Path.Combine(session, "session.open");
+        using (var activeSession = new FileStream(marker, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+            Assert.False(MainWindow.HasUncleanRecovery(root));
+        Assert.True(MainWindow.HasUncleanRecovery(root));
+        File.Delete(marker);
+        var assetFolder = Path.Combine(session, "states"); Directory.CreateDirectory(assetFolder);
+        File.WriteAllText(Path.Combine(assetFolder, "session.open"), "");
+        File.WriteAllText(Path.Combine(assetFolder, "recovery.tasproj"), "");
+        Assert.False(MainWindow.HasUncleanRecovery(root));
+    }
+
+    [AvaloniaFact]
     public void RecentProjectCardsShowRealSummaryAndSelectedDetails()
     {
         using var files = new TestWorkspace();

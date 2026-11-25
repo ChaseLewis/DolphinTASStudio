@@ -8,6 +8,11 @@ const { EventEmitter } = require('node:events');
 test('interrupted batches remain visible and resume invokes saved batch without saving or rebuilding source', async () => {
   const batch = path.resolve('project/.runs/interrupted');
   const files = new Map();
+  const config = path.resolve('project/experiment.tascsharp.json');
+  const identity = path.resolve('project/experiment.identity.json');
+  files.set(identity, JSON.stringify({ Name: 'Boss RNG' }));
+  files.set(config, JSON.stringify({ DisplayName: 'Boss RNG', Name: 'Last successful run: zero-delay winner' }));
+  files.set(path.join(batch, 'experiment.json'), JSON.stringify({ Name: 'Old successful run' }));
   const commands = new Map();
   const invocations = [];
   let provider, saveCalls = 0;
@@ -54,6 +59,15 @@ test('interrupted batches remain visible and resume invokes saved batch without 
   const nodes = await provider.getChildren();
   assert.equal(nodes.length, 1);
   assert.equal(nodes[0].kind, 'batch');
+  assert.equal(nodes[0].label, 'Boss RNG');
+  assert.equal(provider.getTreeItem(nodes[0]).description, 'Run: interrupted');
+  files.set(config, JSON.stringify({ DisplayName: 'Boss RNG', Name: 'Next sweep: 200 trials' }));
+  assert.equal((await provider.getChildren())[0].label, 'Boss RNG');
+  files.set(config, JSON.stringify({ Name: 'Last successful run' }));
+  files.delete(identity);
+  assert.equal((await provider.getChildren())[0].label, 'project');
+  files.set(identity, JSON.stringify({ Name: 'Boss RNG' }));
+  files.set(config, JSON.stringify({ DisplayName: 'Latest batch', Name: 'Latest batch' }));
   assert.equal((await provider.getChildren(nodes[0])).length, 0); // No final summary after a crash.
   await commands.get('tasStudio.resume')(nodes[0]);
   await commands.get('tasStudio.resume')(); // Command Palette picker.
@@ -67,4 +81,27 @@ test('interrupted batches remain visible and resume invokes saved batch without 
   files.set(path.join(batch, 'results.json'), JSON.stringify([{ Index: 0, Name: 'Trial 0', Status: 'failed' }]));
   files.set(path.join(batch, 'run-00001/job.json'), JSON.stringify({ OutputDirectory: attempt }));
   assert.equal((await provider.getChildren(nodes[0]))[0].directory, attempt);
+  files.delete(path.join(batch, 'results.json'));
+  files.set(path.join(batch, 'results.json.gz'), require('node:zlib').gzipSync(JSON.stringify([{ Index: 0, Name: 'Compressed trial', Status: 'completed' }])));
+  const compressed = (await provider.getChildren(nodes[0]))[0];
+  assert.equal(compressed.label, '#0 Compressed trial');
+  assert.equal(compressed.kind, 'completedResult');
+
+  const nested = path.resolve('project/.runs/studio-run/batch/experiment.json');
+  files.set(nested, JSON.stringify({ Name: 'Another winning run' }));
+  vscode.workspace.findFiles = async pattern => pattern.includes('experiment.json') ? [Uri.file(nested)] : [Uri.file(config)];
+  const current = await provider.getChildren();
+  assert.equal(current.length, 2);
+  assert.deepEqual(Array.from(current, node => node.label), ['Boss RNG', 'Boss RNG']);
+  assert.equal(current[0].kind, 'experiment');
+  files.set(identity, JSON.stringify({ name: ' Renamed search ' }));
+  assert.deepEqual(Array.from(await provider.getChildren(), node => node.label), ['Renamed search', 'Renamed search']);
+  files.set(identity, JSON.stringify({ Name: ' ' }));
+  assert.deepEqual(Array.from(await provider.getChildren(), node => node.label), ['project', 'project']);
+  const detached = path.resolve('exported-batch/experiment.json');
+  files.set(detached, JSON.stringify({ Name: 'Batch must not become experiment', DisplayName: 'Batch must not become experiment' }));
+  vscode.workspace.findFiles = async pattern => pattern.includes('experiment.json') ? [Uri.file(detached)] : [];
+  assert.equal((await provider.getChildren())[0].label, 'Experiment');
+  files.set(path.resolve('exported-batch/experiment.identity.json'), JSON.stringify({ Name: 'Original experiment' }));
+  assert.equal((await provider.getChildren())[0].label, 'Original experiment');
 });

@@ -1,0 +1,91 @@
+diff --git a/Source/Core/DolphinLibretro/Common/Options.cpp b/Source/Core/DolphinLibretro/Common/Options.cpp
+--- a/Source/Core/DolphinLibretro/Common/Options.cpp
++++ b/Source/Core/DolphinLibretro/Common/Options.cpp
+@@ -2089,6 +2089,10 @@
+ 
+     if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+     {
++      // Runtime presentation changes must not reapply unrelated game settings.
++      if (optionCache[key].raw == var.value)
++        continue;
++
+       CachedOption entry;
+       entry.raw = var.value;
+ 
+diff --git a/Source/Core/DolphinLibretro/Main.cpp b/Source/Core/DolphinLibretro/Main.cpp
+--- a/Source/Core/DolphinLibretro/Main.cpp
++++ b/Source/Core/DolphinLibretro/Main.cpp
+@@ -498,8 +498,13 @@
+ 
+   if (Libretro::Options::IsUpdated(Libretro::Options::gfx_settings::EFB_SCALE))
+   {
+-    g_Config.iEFBScale = Libretro::Options::GetCached<int>(
++    const int scale = Libretro::Options::GetCached<int>(
+       Libretro::Options::gfx_settings::EFB_SCALE);
++    // Keep the presentation override through config refreshes and state loads.
++    Config::SetCurrent(Config::GFX_EFB_SCALE, scale);
++    g_Config.iEFBScale = scale;
++    if (Libretro::Video::hw_render.context_type == RETRO_HW_CONTEXT_D3D11)
++      g_presenter->ResizeSurface();
+ 
+     unsigned cmd = RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO;
+     if (Libretro::Video::hw_render.context_type == RETRO_HW_CONTEXT_D3D11 ||
+diff --git a/Source/Core/VideoBackends/D3DCommon/SwapChain.h b/Source/Core/VideoBackends/D3DCommon/SwapChain.h
+--- a/Source/Core/VideoBackends/D3DCommon/SwapChain.h
++++ b/Source/Core/VideoBackends/D3DCommon/SwapChain.h
+@@ -46,7 +46,7 @@
+   virtual bool Present();
+ 
+   bool ChangeSurface(void* native_handle);
+-  bool ResizeSwapChain();
++  virtual bool ResizeSwapChain();
+   void SetStereo(bool stereo);
+   void SetHDR(bool hdr);
+ 
+diff --git a/Source/Core/DolphinLibretro/Video.h b/Source/Core/DolphinLibretro/Video.h
+--- a/Source/Core/DolphinLibretro/Video.h
++++ b/Source/Core/DolphinLibretro/Video.h
+@@ -90,6 +90,19 @@
+     CreateSwapChainBuffers();
+   }
+ 
++  bool ResizeSwapChain() override
++  {
++    const u32 old_width = m_width, old_height = m_height;
++    const int scale = Libretro::Options::GetCached<int>(Libretro::Options::gfx_settings::EFB_SCALE, 1);
++    m_width = EFB_WIDTH * scale;
++    m_height = GetAdjustedBaseHeight() * scale;
++    if (CreateSwapChainBuffers())
++      return true;
++    m_width = old_width;
++    m_height = old_height;
++    return false;
++  }
++
+   bool Present() override
+   {
+     auto* tex = GetTexture();
+@@ -132,15 +145,15 @@
+       ERROR_LOG_FMT(VIDEO, "Backbuffer texture creation failed");
+       return false;
+     }
++    // Allocate both replacements before releasing the currently bound framebuffer.
++    auto fb = DX11::DXFramebuffer::Create(tex.get(), nullptr, {});
++    if (!fb)
++    {
++      ERROR_LOG_FMT(VIDEO, "Backbuffer framebuffer creation failed");
++      return false;
++    }
++    SetFramebuffer(std::move(fb));
+     SetTexture(std::move(tex));
+-
+-    auto fb = DX11::DXFramebuffer::Create(GetTexture(), nullptr, {});
+-    if (!fb)
+-    {
+-      ERROR_LOG_FMT(VIDEO, "Backbuffer framebuffer creation failed");
+-      return false;
+-    }
+-    SetFramebuffer(std::move(fb));
+ 
+     return true;
+   }

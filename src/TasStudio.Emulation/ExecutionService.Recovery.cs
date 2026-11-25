@@ -5,6 +5,7 @@ namespace TasStudio.Emulation;
 public sealed partial class ExecutionService
 {
     private readonly SemaphoreSlim _recoveryWriter = new(1, 1);
+    private readonly ProjectStateHashCache _recoveryStateHashes = new();
     /// <summary>Take an owner-thread view, then persist it without pausing playback or calling the core from the writer.</summary>
     public async Task<long> SaveRecoveryAsync(string path)
     {
@@ -14,6 +15,7 @@ public sealed partial class ExecutionService
     }
     private async Task<long> WriteRecoveryAsync(string path)
     {
+        using var timing = PerfLog.Time("recovery.save");
         var captured = await Enqueue(() =>
         {
             RequireProject();
@@ -28,7 +30,7 @@ public sealed partial class ExecutionService
             RecoveryAssetCleanup.Previous? previous = null;
             try { previous = RecoveryAssetCleanup.Capture(path); }
             catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException) { }
-            FolderProject.Save(path, captured.Metadata, captured.Initial, captured.Takes, captured.Sections, []);
+            FolderProject.Save(path, captured.Metadata, captured.Initial, captured.Takes, captured.Sections, [], null, _recoveryStateHashes);
             RecoveryAssetCleanup.Collect(previous);
         });
         return captured.Revision;
@@ -39,6 +41,7 @@ public sealed partial class ExecutionService
         InterruptSeek();
         return Enqueue(() =>
         {
+            if (_takingOver) { EndTakeOver(); return; }
             RequireLoaded(); Pause();
             if (_hasProject) Seek(0);
             Notify(_hasProject ? "Playback stopped at project start — ROM and inputs retained" : "Playback stopped — game retained");

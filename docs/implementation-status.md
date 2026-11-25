@@ -32,7 +32,9 @@ architectural review while documenting its findings.
 - Rendering: D3D11 RGBA texture readback to Avalonia.
 - Execution: single core, JIT64, HLE DSP, native internal resolution.
 - Clock: configured epoch 2000-01-01 UTC plus emulated ticks.
-- Storage: application-owned profile with raw memory card in slot A, slot B empty.
+- Storage: raw Play cards or a live project-local `gci/` folder in slot A, slot B empty.
+  Play imports stock Dolphin GCI folders as card copies and can create a TAS project
+  directly from its paused state, including the card and emulator settings.
 
 Verified artifact SHA-256 identities:
 
@@ -105,9 +107,11 @@ for these sequences, not a proof for every game or configuration.
   are not accepted as compatible. Rebuilding the core can invalidate old states.
 - Projects require the recorded ROM path to exist. ROM relocation, broad
   migration, and cross-machine portability need additional UI and tests.
-- Project baselines include a core savestate with raw memory-card contents.
-  Reopen uses a fresh writable profile. Wii NAND/GCI folder portability is outside
-  the initial supported configuration.
+- Project baselines embed raw cards or all loaded GCI saves. Project GCI folders
+  are live and read at boot; explicit folder restart creates a new baseline.
+  States retain the current destination after relocation, and experiment workers
+  use private folders. Dolphin movie export still requires raw cards. Wii NAND
+  is outside the supported configuration.
 - Memory operations currently cover MEM1 RAM. Treat writes as data changes;
   arbitrary code patches requiring JIT invalidation and MMIO are not exposed.
 - Seeking replays from the beginning. It is cancelable at step boundaries;

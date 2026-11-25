@@ -5,7 +5,8 @@
   "required": ["Name", "SourceProject", "Project", "AssemblyName", "TypeName"],
   "additionalProperties": false,
   "properties": {
-    "Name": { "type": "string", "minLength": 1 },
+    "Name": { "type": "string", "minLength": 1, "description": "Description of this batch; does not change the experiment's menu label." },
+    "DisplayName": { "type": ["string", "null"], "description": "Legacy request metadata; ignored for experiment labels. Use Rename experiment or experiment.identity.json to set the experiment name." },
     "SourceProject": { "type": "string", "description": "Saved .tasproj path, relative to this configuration or absolute." },
     "Project": { "type": "string", "description": "C# class library .csproj, relative to this configuration or absolute." },
     "AssemblyName": { "type": "string", "description": "Compiled DLL name without .dll." },

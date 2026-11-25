@@ -14,7 +14,7 @@ public sealed record WorkspaceFloat(WorkspaceNode Layout, double X, double Y, do
 public sealed record WorkspaceLayout(int Version, WorkspaceNode Main, WorkspaceFloat[] Windows)
 {
     public const int CurrentVersion = 1;
-    public static readonly string[] PanelIds = ["game", "timeline", "input", "watcher"];
+    public static readonly string[] PanelIds = ["game", "timeline", "input", "watcher", "controller"];
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true, MaxDepth = 32 };
 
     public string ToJson() => JsonSerializer.Serialize(this, Json);
@@ -84,6 +84,11 @@ public sealed class WorkspaceFactory : Factory
         root.ActiveDockable = root.DefaultDockable = main;
         return root;
     }
+
+    public WorkspaceLayout CreateMovieLayout() => new(WorkspaceLayout.CurrentVersion,
+        new("root", Children: [new("horizontal", Children:
+        [new("tabs", Proportion: .72, Children: [new("panel", "game")]),
+         new("tabs", Proportion: .28, Children: [new("panel", "controller")])])]), []);
 
     public ToolDock Tabs(StudioPanel panel, double proportion = 1) => new()
     {

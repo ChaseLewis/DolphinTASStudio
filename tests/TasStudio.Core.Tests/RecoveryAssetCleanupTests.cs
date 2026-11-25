@@ -14,7 +14,7 @@ public sealed class RecoveryAssetCleanupTests
             (ulong)inputs.Length, 0, Convert.ToHexString(SHA256.HashData(State)), 0, 0, inputs, []);
         FolderProject.Save(path, metadata, new(0, State, null), [], [], []);
     }
-    private static string[] JsonAssets(string root) => Directory.GetFiles(root, "*.json", SearchOption.AllDirectories);
+    private static string[] JsonAssets(string root) => Directory.GetFiles(root, "*.json*", SearchOption.AllDirectories);
 
     [Fact]
     public void ChangedTailCollectsOnlyPreviousUnreferencedJsonAndPreservesBaselineAndUnrelatedFile()

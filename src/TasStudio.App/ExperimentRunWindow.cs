@@ -22,12 +22,14 @@ internal sealed class ExperimentRunWindow : Window
     public ExperimentRunWindow(string worker, PreparedExperimentRun run, Action? showPlays = null)
     {
         _run = run;
-        Title = "Experiment run"; Width = 760; Height = 460;
+        Title = run.Name + " — Experiment run"; Width = 760; Height = 460;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        var root = new Grid { RowDefinitions = new("Auto,*,Auto"), Margin = new Thickness(16), RowSpacing = 12 };
-        root.Children.Add(_status);
+        var root = new Grid { RowDefinitions = new("Auto,Auto,*,Auto"), Margin = new Thickness(16), RowSpacing = 12 };
+        root.Children.Add(new TextBlock { Name = "ExperimentName", Text = run.Name, FontSize = 18, FontWeight = Avalonia.Media.FontWeight.SemiBold,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap });
+        Grid.SetRow(_status, 1); root.Children.Add(_status);
         var scroll = new ScrollViewer { Content = _output };
-        Grid.SetRow(scroll, 1); root.Children.Add(scroll);
+        Grid.SetRow(scroll, 2); root.Children.Add(scroll);
         var open = new Button { Content = "Open run folder" };
         open.Click += (_, _) =>
         {
@@ -37,7 +39,7 @@ internal sealed class ExperimentRunWindow : Window
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { _cancel, open } };
         var plays = new Button { Content = "Top plays…", IsVisible = showPlays != null };
         plays.Click += (_, _) => showPlays?.Invoke(); actions.Children.Add(plays);
-        Grid.SetRow(actions, 2); root.Children.Add(actions); Content = root;
+        Grid.SetRow(actions, 3); root.Children.Add(actions); Content = root;
         _cancel.Click += (_, _) => Cancel();
         Closing += (_, _) => { if (!_finished) Cancel(); };
         Opened += async (_, _) => await Execute(worker);
@@ -108,6 +110,11 @@ internal sealed class ExperimentRunWindow : Window
                 "Experiment failed or some trials did not complete. See the output and worker.log.";
         }
         catch (Exception ex) { _status.Text = "Experiment could not run: " + ex.Message; }
-        finally { _finished = true; _cancel.IsEnabled = false; }
+        finally
+        {
+            var cleanup = await Task.Run(() => ExperimentStorage.CleanBatch(_run.BatchDirectory));
+            if (cleanup.Error != null) _status.Text += " Cleanup: " + cleanup.Error;
+            _finished = true; _cancel.IsEnabled = false;
+        }
     }
 }

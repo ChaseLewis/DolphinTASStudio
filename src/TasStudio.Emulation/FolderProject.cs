@@ -7,6 +7,7 @@ namespace TasStudio.Emulation;
 public sealed record ProjectAsset(string Path, string Sha256);
 public sealed record TakeAsset(string Id, string Name, int Start, string BaselineHash, string Provenance, ProjectAsset[] Inputs, string? EventsHash = null)
 {
+    public bool IsActive { get; init; }
     public ProjectAsset? Experiment { get; init; }
 }
 public sealed record StateAsset(string Id, string Name, ulong Position, string HistoryHash, ProjectAsset Data);
@@ -37,8 +38,30 @@ public static class FolderProject
     {
         using var stream = File.OpenRead(path); return stream.ReadByte() == 'P' && stream.ReadByte() == 'K';
     }
-    public static FolderProjectContent Load(string path)
+    public static FolderProjectContent Load(string path) => LoadCore(path, null);
+
+    /// <summary>Load the movie and at most one state. The project's other state files are neither read nor verified.</summary>
+    public static FolderProjectContent LoadForState(string path, string? stateId) => LoadCore(path, null, id => id == stateId);
+
+    /// <summary>Project settings only; no asset is read or verified.</summary>
+    public static ArchiveMetadata LoadEnvironment(string path) => IsLegacy(path) ? Load(path).Archive.Metadata
+        : ReadJson<ProjectManifest>(path).Environment ?? throw new InvalidDataException("Incomplete project manifest.");
+
+    /// <summary>
+    /// Load for opening in Studio. State files whose size and timestamps match <paramref name="known"/> are not
+    /// reread; <paramref name="revalidate"/> rereads every one and corrects the remembered checksums.
+    /// </summary>
+    public static FolderProjectContent Load(string path, KnownFileHashes known, bool revalidate = false, CancellationToken cancellationToken = default)
     {
+        try { return LoadCore(path, null, null, file => known.HashFile(file, revalidate, cancellationToken)); }
+        finally { known.Save(); }
+    }
+
+    private static FolderProjectContent LoadCore(string path, ProjectStateHashCache? stateHashes, Func<string, bool>? includeState = null,
+        Func<string, string>? knownStateHash = null)
+    {
+        using var timing = PerfLog.Time(stateHashes == null ? "project.load" : "project.save.verify");
+        using var assetLease = ProjectAssetLease.Acquire(Path.GetDirectoryName(Path.GetFullPath(path))!);
         if (IsLegacy(path)) return new(ProjectArchive.Load(path, ProjectArchive.ProjectKind), [], [], [], true);
         var manifest = ReadJson<ProjectManifest>(path);
         if (manifest.Version is not (2 or Version)) throw new InvalidDataException("Unsupported folder project version.");
@@ -47,15 +70,14 @@ public static class FolderProject
         var movie = ReadJson<MovieData>(Resolve(root, manifest.Timeline));
         if (movie.Inputs == null || movie.Takes == null || movie.Events == null || movie.Sections == null) throw new InvalidDataException("Incomplete movie metadata.");
         if (movie.Takes.Length > 1000 || manifest.States.Length > 10000) throw new InvalidDataException("Project asset count exceeds supported limits.");
-        var inputs = ReadInputs(root, movie.Inputs);
-        var initialContent = ProjectArchive.Load(Resolve(root, manifest.InitialState), ProjectArchive.StateKind);
+        var inputs = ReadInputs(root, movie.Inputs, stateHashes);
+        var initialContent = ProjectArchive.Load(Resolve(root, manifest.InitialState, stateHashes, knownStateHash), ProjectArchive.StateKind);
         var initial = initialContent.InitialState;
         if (movie.PollFrames == null || movie.PollFrames.Length > MaximumFrames)
             throw new InvalidDataException("Invalid poll assets.");
         var pollFrames = new List<RecordedInputFrame>();
-        foreach (var asset in movie.PollFrames)
+        foreach (var chunk in ReadChunks<RecordedInputFrame>(root, movie.PollFrames, stateHashes))
         {
-            var chunk = ReadJson<RecordedInputFrame[]>(Resolve(root, asset));
             if (chunk.Length > FramesPerChunk || pollFrames.Count + chunk.Length > MaximumFrames)
                 throw new InvalidDataException("Too many poll groups.");
             pollFrames.AddRange(chunk);
@@ -66,9 +88,10 @@ public static class FolderProject
             throw new InvalidDataException("Baseline settings do not match the project.");
         if (initial.Position != 0 || metadata.StateHash != Convert.ToHexString(SHA256.HashData(initial.Data)))
             throw new InvalidDataException("Project initial state identity does not match.");
-        var takes = movie.Takes.Select(t => new InputTake(t.Id, t.Name, t.Start, ReadInputs(root, t.Inputs), t.BaselineHash, t.Provenance)
+        var takes = movie.Takes.Select(t => new InputTake(t.Id, t.Name, t.Start, ReadInputs(root, t.Inputs, stateHashes), t.BaselineHash, t.Provenance)
         {
             EventsHash = t.EventsHash,
+            IsActive = t.IsActive,
             Experiment = t.Experiment == null ? null : ReadJson<ExperimentPlay>(Resolve(root, t.Experiment))
         }).ToArray();
         foreach (var take in takes.Where(t => t.Experiment != null))
@@ -81,48 +104,59 @@ public static class FolderProject
             takes.Select(t => t.Id).Distinct().Count() != takes.Length ||
             movie.Sections.Any(s => s.Start < 0 || s.Length <= 0 || (long)s.Start + s.Length > inputs.Length))
             throw new InvalidDataException("Invalid take or timeline section.");
-        var states = manifest.States.Select(s => new SavedStateReference(s.Id, s.Name, s.Position, s.HistoryHash, Resolve(root, s.Data))).ToArray();
+        bool Included(StateAsset? state) => includeState == null || state == null || includeState(state.Id);
+        var states = manifest.States.Where(Included).Select(s => new SavedStateReference(s.Id, s.Name, s.Position, s.HistoryHash, Resolve(root, s.Data, stateHashes, knownStateHash))).ToArray();
         if (manifest.AutomaticCheckpoints == null || manifest.AutomaticCheckpoints.Length > 10000) throw new InvalidDataException("Invalid automatic checkpoint list.");
-        var automatic = manifest.AutomaticCheckpoints.Select(c =>
+        var automatic = manifest.AutomaticCheckpoints.Where(c => Included(c?.State)).Select(c =>
         {
             if (c.State == null || !double.IsFinite(c.Seconds) || c.Seconds < 0 || c.State.Position > (ulong)inputs.Length)
                 throw new InvalidDataException("Invalid automatic checkpoint metadata.");
             var s = c.State;
-            return new CheckpointReference(new(s.Id, s.Name, s.Position, s.HistoryHash, Resolve(root, s.Data)), c.Seconds, c.Created, c.LastUse);
+            return new CheckpointReference(new(s.Id, s.Name, s.Position, s.HistoryHash, Resolve(root, s.Data, stateHashes, knownStateHash)), c.Seconds, c.Created, c.LastUse);
         }).ToArray();
         return new(new(metadata, initial), takes, movie.Sections, states, false) { AutomaticCheckpoints = automatic };
     }
     public static void Save(string path, ArchiveMetadata metadata, EmulatorSnapshot initial,
         IReadOnlyList<InputTake> takes, IReadOnlyList<TimelineSection> sections, IReadOnlyList<SavedStateReference> states,
         IReadOnlyList<CheckpointReference>? automatic = null)
+        => Save(path, metadata, initial, takes, sections, states, automatic, new ProjectStateHashCache());
+
+    internal static void Save(string path, ArchiveMetadata metadata, EmulatorSnapshot initial,
+        IReadOnlyList<InputTake> takes, IReadOnlyList<TimelineSection> sections, IReadOnlyList<SavedStateReference> states,
+        IReadOnlyList<CheckpointReference>? automatic, ProjectStateHashCache stateHashes)
     {
         if (File.Exists(path) && IsLegacy(path)) throw new InvalidOperationException("Import the legacy ZIP project with Save As into a new folder; the original is preserved.");
+        using var timing = PerfLog.Time("project.save", metadata.Inputs.Length);
+        var chunks = stateHashes.Chunks; chunks.BeginSave();
+        using var assetLease = ProjectAssetLease.Acquire(Path.GetDirectoryName(Path.GetFullPath(path))!);
         ProjectArchive.ValidateMetadata(metadata, ProjectArchive.ProjectKind);
         var full = Path.GetFullPath(path); var root = Path.GetDirectoryName(full)!; Directory.CreateDirectory(root);
+        if (metadata.Configuration?.UseGciFolder == true) Directory.CreateDirectory(ProjectMemoryCards.DirectoryFor(path));
         var previous = File.Exists(full) ? ReadJson<ProjectManifest>(full) : null;
         var baselinePath = Path.Combine(root, "states", "initial-" + metadata.StateHash + (metadata.Configuration == null ? "" : "-" + (metadata.ConfigurationIdentity ?? metadata.Configuration.Fingerprint)) + ".tasstate");
         if (!File.Exists(baselinePath)) ProjectArchive.Save(baselinePath,
             metadata with { Kind = ProjectArchive.StateKind, Position = 0, InitialPosition = 0, Inputs = [], Events = [], PollFrames = [], HistoryHash = null }, initial);
-        var stateAssets = states.Select(s => new StateAsset(s.Id, s.Name, s.Position, s.HistoryHash, CopyState(root, s.Path))).ToArray();
-        var takeAssets = takes.Select(t => new TakeAsset(t.Id, t.Name, t.Start, t.BaselineHash, t.Provenance, WriteInputs(root, t.Inputs), t.EventsHash)
-            { Experiment = t.Experiment == null ? null : WriteJson(root, "inputs", t.Experiment) }).ToArray();
-        var movie = new MovieData(WriteInputs(root, metadata.Inputs), metadata.Events, takeAssets, sections.ToArray())
-        { PollFrames = WritePollFrames(root, metadata.PollFrames) };
+        var stateAssets = states.Select(s => new StateAsset(s.Id, s.Name, s.Position, s.HistoryHash, CopyState(root, s.Path, stateHashes))).ToArray();
+        var takeAssets = takes.Select(t => new TakeAsset(t.Id, t.Name, t.Start, t.BaselineHash, t.Provenance, WriteInputs(root, t.Inputs, chunks), t.EventsHash)
+            { IsActive = t.IsActive, Experiment = t.Experiment == null ? null : WriteJson(root, "inputs", t.Experiment) }).ToArray();
+        var movie = new MovieData(WriteInputs(root, metadata.Inputs, chunks), metadata.Events, takeAssets, sections.ToArray())
+        { PollFrames = WritePollFrames(root, metadata.PollFrames, chunks) };
         var id = previous?.Id ?? Guid.NewGuid().ToString("D");
         var manifest = new ProjectManifest(Version, id, metadata with { Inputs = [], Events = [], PollFrames = [] },
-            Asset(root, baselinePath), WriteJson(root, "timelines", movie), stateAssets)
+            new ProjectAsset(Path.GetRelativePath(root, baselinePath).Replace('\\', '/'), stateHashes.HashFile(baselinePath)), WriteJson(root, "timelines", movie), stateAssets)
         {
             AutomaticCheckpoints = (automatic ?? []).Select(c => new CheckpointAsset(
-                new(c.State.Id, c.State.Name, c.State.Position, c.State.HistoryHash, CopyState(root, c.State.Path)), c.Seconds, c.Created, c.LastUse)).ToArray()
+                new(c.State.Id, c.State.Name, c.State.Position, c.State.HistoryHash, CopyState(root, c.State.Path, stateHashes)), c.Seconds, c.Created, c.LastUse)).ToArray()
         };
         var temp = full + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
             WriteFlushed(temp, JsonSerializer.SerializeToUtf8Bytes(manifest, Json));
-            Load(temp); // Verify all references before the commit point.
+            LoadCore(temp, stateHashes); // Verify references; reuse checksums only while file stamps match.
             File.Move(temp, full, true);
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
+        chunks.EndSave();
         if (previous != null) RemoveDroppedStateAssets(root, full, previous, manifest);
     }
 
@@ -204,42 +238,72 @@ public static class FolderProject
         await using var stream = File.OpenRead(path);
         return Convert.ToHexString(await SHA256.HashDataAsync(stream, token));
     }
-    private static ProjectAsset[] WriteInputs(string root, ControllerState[] inputs) => inputs.Chunk(FramesPerChunk).Select(c => WriteJson(root, "inputs", c)).ToArray();
-    private static ProjectAsset[] WritePollFrames(string root, RecordedInputFrame[] frames)
+    private static ProjectAsset[] WriteInputs(string root, ControllerState[] inputs, ProjectChunkCache chunks) =>
+        inputs.Chunk(FramesPerChunk).Select(c => WriteChunk(root, ProjectChunkCache.Key(c), c, chunks)).ToArray();
+    private static ProjectAsset[] WritePollFrames(string root, RecordedInputFrame[] frames, ProjectChunkCache chunks)
     {
         var assets = new List<ProjectAsset>(); var chunk = new List<RecordedInputFrame>(); var polls = 0;
+        void Flush() { var copy = chunk.ToArray(); assets.Add(WriteChunk(root, ProjectChunkCache.Key(copy), copy, chunks)); }
         foreach (var frame in frames)
         {
             if (chunk.Count > 0 && (chunk.Count >= 128 || polls + frame.Frame.Polls.Length > 16384))
-            { assets.Add(WriteJson(root, "inputs", chunk)); chunk.Clear(); polls = 0; }
+            { Flush(); chunk.Clear(); polls = 0; }
             chunk.Add(frame); polls += frame.Frame.Polls.Length;
         }
-        if (chunk.Count > 0) assets.Add(WriteJson(root, "inputs", chunk));
+        if (chunk.Count > 0) Flush();
         return assets.ToArray();
     }
-    private static ControllerState[] ReadInputs(string root, ProjectAsset[] assets)
+    // An unchanged chunk whose asset is still on disk needs no JSON, gzip or rewrite.
+    private static ProjectAsset WriteChunk<T>(string root, string key, T[] chunk, ProjectChunkCache chunks)
+    {
+        if (chunks.TryAsset(key, root, out var known)) return known;
+        var asset = WriteJson(root, "inputs", chunk);
+        chunks.Remember(key, asset, chunk);
+        return asset;
+    }
+    private static ControllerState[] ReadInputs(string root, ProjectAsset[] assets, ProjectStateHashCache? stateHashes = null)
     {
         if (assets.Length > (MaximumFrames + FramesPerChunk - 1) / FramesPerChunk) throw new InvalidDataException("Movie is too long.");
         var list = new List<ControllerState>();
-        foreach (var asset in assets)
+        foreach (var chunk in ReadChunks<ControllerState>(root, assets, stateHashes))
         {
-            var chunk = ReadJson<ControllerState[]>(Resolve(root, asset));
             if (chunk.Length is 0 or > FramesPerChunk || list.Count + chunk.Length > MaximumFrames) throw new InvalidDataException("Invalid input chunk.");
             if (chunk.Any(p => (p.Buttons & ~ControllerState.KnownButtons) != PadButtons.None)) throw new InvalidDataException("Unknown controller bits in input chunk.");
             list.AddRange(chunk);
         }
         return list.ToArray();
     }
+    // Chunks are independent files: verify and parse them concurrently, then hand them back in movie order.
+    private static T[][] ReadChunks<T>(string root, ProjectAsset[] assets, ProjectStateHashCache? stateHashes)
+    {
+        var chunks = new T[assets.Length][];
+        if (stateHashes != null)
+        {
+            // A save's verification mostly reuses what it just wrote; its caches belong to one thread.
+            for (var i = 0; i < assets.Length; i++)
+            {
+                var file = Resolve(root, assets[i], stateHashes);
+                chunks[i] = stateHashes.Chunks.TryChunk<T[]>(assets[i].Sha256) ?? ReadJson<T[]>(file);
+            }
+            return chunks;
+        }
+        try { Parallel.For(0, assets.Length, i => chunks[i] = ReadJson<T[]>(Resolve(root, assets[i]))); }
+        // Report a chunk's failure as itself, as a sequential read would, not as an aggregate.
+        catch (AggregateException failures) { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failures.InnerExceptions[0]).Throw(); }
+        return chunks;
+    }
     private static ProjectAsset WriteJson<T>(string root, string folder, T value)
     {
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(value, Json); var hash = Convert.ToHexString(SHA256.HashData(bytes));
-        var path = Path.Combine(root, folder, hash + ".json");
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(value, Json);
+        if (folder == "inputs") bytes = CompressedJson.Compress(bytes);
+        var hash = Convert.ToHexString(SHA256.HashData(bytes));
+        var path = Path.Combine(root, folder, hash + (folder == "inputs" ? ".json.gz" : ".json"));
         if (!File.Exists(path)) WriteFlushed(path, bytes);
         return new(Path.GetRelativePath(root, path).Replace('\\', '/'), hash);
     }
-    private static ProjectAsset CopyState(string root, string source)
+    private static ProjectAsset CopyState(string root, string source, ProjectStateHashCache stateHashes)
     {
-        var hash = HashFile(source); var destination = Path.Combine(root, "states", hash + ".tasstate");
+        var hash = stateHashes.HashFile(source); var destination = Path.Combine(root, "states", hash + ".tasstate");
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
         if (!File.Exists(destination))
         {
@@ -249,20 +313,19 @@ public static class FolderProject
         }
         return new(Path.GetRelativePath(root, destination).Replace('\\', '/'), hash);
     }
-    private static ProjectAsset Asset(string root, string path) => new(Path.GetRelativePath(root, path).Replace('\\', '/'), HashFile(path));
     private static string HashFile(string path) { using var file = File.OpenRead(path); return Convert.ToHexString(SHA256.HashData(file)); }
-    private static string Resolve(string root, ProjectAsset asset)
+    private static string Resolve(string root, ProjectAsset asset, ProjectStateHashCache? stateHashes = null, Func<string, string>? knownHash = null)
     {
         var full = Path.GetFullPath(asset.Path, root);
         if (Path.IsPathRooted(asset.Path) || !full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Project asset escapes its directory.");
-        if (HashFile(full) != asset.Sha256) throw new InvalidDataException("Project asset checksum mismatch: " + asset.Path);
+        if ((stateHashes?.HashFile(full) ?? knownHash?.Invoke(full) ?? HashFile(full)) != asset.Sha256) throw new InvalidDataException("Project asset checksum mismatch: " + asset.Path);
         return full;
     }
     private static T ReadJson<T>(string path)
     {
         if (new FileInfo(path).Length > MaximumJsonBytes) throw new InvalidDataException("Project metadata is too large.");
-        return JsonSerializer.Deserialize<T>(File.ReadAllBytes(path), Json) ?? throw new InvalidDataException("Missing project metadata.");
+        return JsonSerializer.Deserialize<T>(CompressedJson.ReadBytes(path, MaximumJsonBytes), Json) ?? throw new InvalidDataException("Missing project metadata.");
     }
     private static void WriteFlushed(string path, byte[] bytes)
     {

@@ -52,6 +52,7 @@ struct tas_host {
   DWORD owner = GetCurrentThreadId();
   bool initialized = false, loaded = false, load_attempted = false, context_active = false;
   bool faulted = false;
+  bool options_changed = false;
   std::string error, system_dir, save_dir;
   std::ofstream log;
   std::mutex log_mutex, audio_mutex;
@@ -137,7 +138,10 @@ bool environment_impl(unsigned command, void* data) {
     variable->value = found == h.options.end() ? nullptr : found->second.c_str();
     return variable->value != nullptr;
   }
-  case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: *static_cast<bool*>(data) = false; return true;
+  case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
+    *static_cast<bool*>(data) = h.options_changed;
+    h.options_changed = false;
+    return true;
   case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: return *static_cast<retro_pixel_format*>(data) == RETRO_PIXEL_FORMAT_XRGB8888;
   case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER: *static_cast<retro_hw_context_type*>(data) = RETRO_HW_CONTEXT_D3D11; return true;
   case RETRO_ENVIRONMENT_SET_HW_RENDER: {
@@ -304,6 +308,15 @@ int tas_set_option(tas_host* h, const char* key, const char* value) { return gua
     throw std::runtime_error("Single-core execution is required.");
   h->options[key] = value;
 }); }
+int tas_set_render_resolution(tas_host* h, int scale) { return guarded(h, [&] {
+  h->require_loaded();
+  if (scale < 1 || scale > 4) throw std::runtime_error("Render resolution must be between 1 and 4.");
+  const auto value = std::to_string(scale);
+  if (h->options[CoreResolutionOption] != value) {
+    h->options[CoreResolutionOption] = value;
+    h->options_changed = true;
+  }
+}); }
 void tas_destroy(tas_host* h) {
   if (!h) return;
   // Refuse to unload a live DLL from another thread even if a caller violates the ABI.
@@ -323,6 +336,25 @@ void tas_destroy(tas_host* h) {
   })) return; // Preserve the live module if shutdown failed; do not free executable code in use.
   if (h->library) FreeLibrary(h->library);
   active = nullptr; delete h;
+}
+int tas_flush_gci_folder(tas_host* h) {
+  return guarded(h, [&] {
+    h->require_loaded();
+    auto flush = reinterpret_cast<void (*)()>(GetProcAddress(h->library, "dolphin_tas_flush_gci_folder"));
+    if (!flush) throw std::runtime_error("This core does not support project GCI folders. Rebuild the native core.");
+    flush();
+  });
+}
+int tas_create_memory_card(tas_host* h, const char* const* paths, size_t count, const char* destination, int japanese) {
+  return guarded(h, [&] {
+    h->require_loaded();
+    using Import = bool (*)(const char* const*, size_t, const char*, bool, char*, size_t);
+    auto import = reinterpret_cast<Import>(GetProcAddress(h->library, "dolphin_tas_create_memory_card"));
+    if (!import) throw std::runtime_error("This core does not support GCI import. Rebuild the native core.");
+    char error[2048]{};
+    if (!import(paths, count, destination, japanese != 0, error, sizeof(error)))
+      throw std::runtime_error(error[0] ? error : "Memory card import failed.");
+  });
 }
 int tas_load(tas_host* h, const char* game) {
   return guarded(h, [&] {
@@ -394,9 +426,21 @@ int tas_restore(tas_host* h, const void* bytes, size_t size) { return guarded(h,
   if (!rollback_size || rollback_size > MaximumStateBytes) throw std::runtime_error("Invalid rollback state size.");
   std::vector<uint8_t> rollback(rollback_size);
   if (!h->serialize(rollback.data(), rollback.size())) throw std::runtime_error("Unable to capture rollback state.");
+  const auto clear_audio = [&] {
+    h->samples.clear();
+    // Savestates restore audio registers, not the mixer's queued output/history.
+    // Reapply the current mode to clear it and reset host timing, even when paused.
+    // The owner is between advances and audio_mutex excludes the device consumer.
+    if (h->audio_playback && !h->audio_playback(h->pull_audio))
+      throw std::runtime_error("Dolphin audio mixer is unavailable after state restore.");
+  };
   const auto recover = [&] {
     h->faulted = true;
-    try { h->faulted = !h->unserialize(rollback.data(), rollback.size()); }
+    try {
+      const auto recovered = h->unserialize(rollback.data(), rollback.size());
+      clear_audio();
+      h->faulted = !recovered;
+    }
     catch (...) { /* Keep the backend faulted if native recovery also throws. */ }
     h->samples.clear();
   };
@@ -411,7 +455,7 @@ int tas_restore(tas_host* h, const void* bytes, size_t size) { return guarded(h,
     throw std::runtime_error(h->faulted ? "Savestate restoration and recovery failed; reopen the game." :
       "Savestate restoration failed; the previous state was recovered.");
   }
-  h->samples.clear();
+  clear_audio();
 }); }
 int tas_memory(tas_host* h, uint32_t address, void* bytes, size_t size, int write) { return guarded(h, [&] {
   h->require_loaded();

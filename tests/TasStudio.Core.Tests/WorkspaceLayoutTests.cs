@@ -56,7 +56,7 @@ public sealed class WorkspaceLayoutTests
         var saved = new WorkspaceLayout(1, new("root", Children: [new("tabs", Children: [new("panel", "timeline")])]), []);
         var restored = factory.Restore(saved);
         Assert.Single(WorkspaceFactory.Walk(restored).OfType<StudioPanel>());
-        Assert.Equal(4, factory.Panels.Count);
+        Assert.Equal(5, factory.Panels.Count);
     }
 
     [Fact]

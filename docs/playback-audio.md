@@ -29,7 +29,12 @@ and reset exclude mixing with the native audio mutex; `retro_run` does not hold
 that mutex. Teardown retires the source before destroying the native host.
 Mode switches clear only the mixer's output history, preserving its emulated
 sample-rate and volume registers. Emulation and audio consumers are stopped
-during that clear.
+during that clear. State restoration (including recovery from a rejected state)
+also clears the mixer history and captured packets and resets host timing in the
+current playback mode. This applies even when already paused, so loading a selected
+state cannot carry queued sound into subsequent frame advances.
+`0008-audio-output-clear.patch` also erases the retained mixer queue samples;
+resetting its cursors alone lets Dolphin's gap filling replay old granules.
 
 Frame advance, seek and experiment execution do not enable realtime mode. They
 retain unthrottled deterministic execution, existing input polls and presentation

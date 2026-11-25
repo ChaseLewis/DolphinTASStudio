@@ -5,6 +5,41 @@ namespace TasStudio.Core.Tests;
 
 public sealed class ProjectCreationTests
 {
+    [Fact]
+    public async Task CurrentPlayStartCopiesThePausedSessionAndKeepsItsCardProfileSeparate()
+    {
+        using var files = new TestWorkspace(); using var service = new ExecutionService(new FakeBackend());
+        var config = new EmulationConfiguration { StartUtcSeconds = 1234567890, MemoryCardSizeOverride = 0 };
+        await service.LoadPlayGameAsync(files.GamePath, files.Options with { Configuration = config });
+        for (var i = 0; i < 5; i++) await service.AdvanceFrameAsync(ControllerState.Neutral with { StickX = 240 });
+        var memory = await service.ReadMemoryAsync(0x80000000, 4);
+        var path = files.FilePath("from-play/project.tasproj");
+        await service.CreateProjectAsync(path, files.GamePath, files.Options, fromCurrentPlay: true);
+        Assert.True(service.HasProject); Assert.False(service.IsManualPlay); Assert.True(service.IsPreviewCurrent);
+        Assert.Equal(0UL, service.Position); Assert.Empty(service.Inputs);
+        Assert.Equal(memory, await service.ReadMemoryAsync(0x80000000, 4));
+        var saved = FolderProject.Load(path).Archive.Metadata;
+        Assert.Equal(new ProjectStart(ProjectStartKind.CapturedState, "Play", 5), saved.Start);
+        Assert.Equal(config.Fingerprint, saved.Configuration!.Fingerprint);
+        Assert.NotEqual(files.Options.SaveDirectory, (await service.GetConfigurationAsync())!.Options.SaveDirectory);
+        await service.StepAsync(); await service.LoadProjectAsync(path, files.Options);
+        Assert.Equal(memory, await service.ReadMemoryAsync(0x80000000, 4));
+    }
+
+    [Fact]
+    public async Task FailedCurrentPlayCreationRestoresPlayInsteadOfLeavingAnUnsavedProject()
+    {
+        using var files = new TestWorkspace(); var backend = new FakeBackend(); using var service = new ExecutionService(backend);
+        await service.LoadPlayGameAsync(files.GamePath, files.Options);
+        await service.AdvanceFrameAsync(ControllerState.Neutral with { StickX = 20 });
+        var memory = await service.ReadMemoryAsync(0x80000000, 4);
+        backend.FailNextLoad = true;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateProjectAsync(files.FilePath("failed/project.tasproj"), files.GamePath, files.Options, fromCurrentPlay: true));
+        Assert.True(service.IsManualPlay); Assert.Equal(1UL, service.Position);
+        Assert.Equal(memory, await service.ReadMemoryAsync(0x80000000, 4));
+        Assert.Equal(files.Options.SaveDirectory, (await service.GetConfigurationAsync())!.Options.SaveDirectory);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

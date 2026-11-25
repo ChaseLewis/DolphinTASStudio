@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using TasStudio.App;
@@ -14,6 +15,39 @@ namespace TasStudio.Core.Tests;
 
 public sealed class ManualPlayTests
 {
+    [AvaloniaFact]
+    public async Task StartTasHereOpensAtCurrentPlayAndCreatesTheProjectWithoutAStateFile()
+    {
+        using var files = new TestWorkspace(); using var service = new ExecutionService(new FakeBackend());
+        await service.LoadPlayGameAsync(files.GamePath, files.Options);
+        await service.AdvanceFrameAsync(ControllerState.Neutral with { StickX = 220 });
+        var memory = await service.ReadMemoryAsync(0x80000000, 4);
+        var main = new MainWindow(["--layout-file", files.FilePath("layout.json")], new AppSettings(), service);
+        try
+        {
+            main.Show(); main.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            main.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "StartTasHere")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await Until(() => main.OwnedWindows.OfType<NewProjectDialog>().Any());
+            var wizard = main.OwnedWindows.OfType<NewProjectDialog>().Single();
+            wizard.Location.Text = files.DirectoryPath; wizard.ProjectName.Text = "Current play";
+            Assert.True(wizard.ReadRequest().FromCurrentPlay); Assert.Null(wizard.ReadRequest().StatePath);
+            Assert.False(wizard.Utc.IsEnabled); Assert.False(wizard.Rom.IsEffectivelyEnabled);
+            if (Environment.GetEnvironmentVariable("TASSTUDIO_TEST_CAPTURE_DIR") is { Length: > 0 } capture)
+            {
+                Directory.CreateDirectory(capture); wizard.UpdateLayout(); AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+                wizard.CaptureRenderedFrame()!.Save(Path.Combine(capture, "start-tas-here.png"));
+            }
+            wizard.GetVisualDescendants().OfType<Button>().Single(b => Equals(b.Content, "Create project"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await Until(() => service.HasProject && !main.OwnedWindows.Any());
+            Assert.Equal(0UL, service.Position); Assert.Empty(service.Inputs);
+            Assert.Equal(memory, await service.ReadMemoryAsync(0x80000000, 4));
+            Assert.Equal(ProjectStartKind.CapturedState, FolderProject.Load(files.FilePath("Current play/Current play.tasproj")).Archive.Metadata.Start!.Kind);
+        }
+        finally { foreach (var dialog in main.OwnedWindows.ToArray()) dialog.Close(); main.CloseAfterCapture(); }
+    }
+
     [Fact]
     public async Task ManualStatesAreIndependentAndBecomePortableProjectBaselines()
     {

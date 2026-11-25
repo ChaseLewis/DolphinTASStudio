@@ -4,12 +4,31 @@ namespace TasStudio.Emulation;
 
 public sealed record VideoFrame(int Width, int Height, byte[] Rgba, long Sequence);
 public sealed record BackendOptions(string CorePath, string SystemDirectory, string SaveDirectory,
-    int InternalResolution = 1, bool DspHle = true, EmulationConfiguration? Configuration = null, string? StorageRoot = null);
+    int InternalResolution = 1, bool DspHle = true, EmulationConfiguration? Configuration = null, string? StorageRoot = null,
+    string? GciDirectory = null);
 /// <summary>Studio's requested settings, not a readback of Dolphin's layered effective config.</summary>
 public sealed record SessionConfiguration(BackendOptions Options, string BackendIdentity);
 public sealed record EmulatorSnapshot(ulong Position, byte[] Data, VideoFrame? Preview = null);
 public sealed record GameCubeMovieCard(string FileName, byte[] Bytes);
 public sealed record GameCubeMovieBoot(GameCubeMovieCard[] Cards, InputPollFrame Inputs);
+
+/// <summary>Experimental runtime presentation override; null restores the boot resolution.</summary>
+public interface IRenderResolutionBackend
+{
+    void SetRenderResolution(int? scale);
+}
+
+/// <summary>Converts GCI saves into a new raw card using Dolphin's save importer.</summary>
+public interface IGameCubeMemoryCardBackend
+{
+    void CreateMemoryCard(IReadOnlyList<string> saves, string destination, bool japanese);
+}
+
+/// <summary>Flush the live GCI card before copying project files.</summary>
+public interface IGciFolderBackend
+{
+    void FlushGciFolder();
+}
 
 /// <summary>Recover original cards and measured startup inputs, verifying boot timing/RAM and restoring the paused session.</summary>
 public interface IGameCubeMovieBootBackend
@@ -31,6 +50,8 @@ public interface IEmulatorBackend : IDisposable
     ulong VideoFieldCount => Position;
     /// <summary>Exact CoreTiming ticks since boot, when supported by the backend.</summary>
     ulong? EmulatedTicks => null;
+    /// <summary>Frequency of the clock used by EmulatedTicks and InputPollFrame.Ticks.</summary>
+    double? EmulatedTicksPerSecond => null;
     InputPollFrame? LastInputPollFrame => null;
     double FramesPerSecond { get; }
     event Action<VideoFrame>? VideoReady;

@@ -8,7 +8,7 @@ using TasStudio.Emulation;
 
 namespace TasStudio.App;
 
-internal sealed record NewProjectRequest(string Path, string Rom, long StartUtc, string? StatePath);
+internal sealed record NewProjectRequest(string Path, string Rom, long StartUtc, string? StatePath, bool FromCurrentPlay = false);
 
 internal sealed class NewProjectDialog : Window
 {
@@ -20,14 +20,23 @@ internal sealed class NewProjectDialog : Window
     internal readonly TextBox Utc = new() { Text = "2000-01-01 00:00:00" };
     internal readonly TextBlock Error = new() { Foreground = StudioTheme.Brush(ThemeColor.Error), TextWrapping = TextWrapping.Wrap };
     private readonly StackPanel _stateRow;
+    private readonly StackPanel _gameRow;
+    private readonly StackPanel _utcRow;
+    private readonly string? _currentPlayRom;
     private readonly TextBlock _startNote = new() { TextWrapping = TextWrapping.Wrap, Foreground = StudioTheme.Brush(ThemeColor.Muted), FontSize = 12 };
 
-    public NewProjectDialog(string? lastRom = null)
+    public NewProjectDialog(string? lastRom = null, bool fromCurrentPlay = false)
     {
         Title = "New project"; Width = 600; SizeToContent = SizeToContent.Height; CanResize = false;
         Background = StudioTheme.Brush(ThemeColor.Panel);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Rom.Text = lastRom;
+        if (fromCurrentPlay)
+        {
+            _currentPlayRom = lastRom;
+            StartingPoint.ItemsSource = new[] { "Power on", "Save state", "Current Play position" };
+            StartingPoint.SelectedIndex = 2;
+        }
         var content = new StackPanel { Margin = new Thickness(24), Spacing = 12 };
         content.Children.Add(new TextBlock { Text = "Create a TAS project", FontSize = 22, FontWeight = FontWeight.SemiBold });
         content.Children.Add(Field("Project name", ProjectName));
@@ -36,11 +45,12 @@ internal sealed class NewProjectDialog : Window
             var folders = await StorageProvider.OpenFolderPickerAsync(new() { Title = "Project location" });
             if (folders.Count > 0) Location.Text = folders[0].TryGetLocalPath();
         })));
-        content.Children.Add(Field("Game image", BrowseRow(Rom, async () =>
+        _gameRow = Field("Game image", BrowseRow(Rom, async () =>
         {
             var path = await Pick("Select game image", ["*.iso", "*.gcm", "*.rvz", "*.gcz", "*.ciso", "*.dol", "*.elf"]);
             if (path != null) Rom.Text = path;
-        })));
+        }));
+        content.Children.Add(_gameRow);
         content.Children.Add(Field("Starting point", StartingPoint));
         _stateRow = Field("Save state", BrowseRow(StatePath, async () =>
         {
@@ -57,7 +67,8 @@ internal sealed class NewProjectDialog : Window
             catch (Exception ex) { Error.Text = ex.Message; }
         }));
         content.Children.Add(_stateRow);
-        content.Children.Add(Field("Start UTC · yyyy-MM-dd HH:mm:ss", Utc));
+        _utcRow = Field("Start UTC · yyyy-MM-dd HH:mm:ss", Utc);
+        content.Children.Add(_utcRow);
         content.Children.Add(_startNote); content.Children.Add(Error);
         var create = new Button { Content = "Create project", IsDefault = true };
         var cancel = new Button { Content = "Cancel", IsCancel = true };
@@ -70,8 +81,13 @@ internal sealed class NewProjectDialog : Window
     private void RefreshStart()
     {
         var state = StartingPoint.SelectedIndex == 1;
-        _stateRow.IsVisible = state; Utc.IsEnabled = !state;
-        _startNote.Text = state ? "Exploration start · copies the state and its settings into the project. Timeline begins at frame 0." : "Starts with a fresh game session at the chosen UTC.";
+        var current = StartingPoint.SelectedIndex == 2 && _currentPlayRom != null;
+        _stateRow.IsVisible = state; Utc.IsEnabled = !state && !current;
+        _utcRow.IsVisible = !current;
+        _gameRow.IsEnabled = !current;
+        if (current) Rom.Text = _currentPlayRom;
+        _startNote.Text = current ? "Starts exactly where Play is paused, including the loaded save and memory card. The project's timeline begins at frame 0." :
+            state ? "Exploration start · copies the state and its settings into the project. Timeline begins at frame 0." : "Starts with a fresh game session at the chosen UTC.";
     }
     internal NewProjectRequest ReadRequest()
     {
@@ -83,15 +99,16 @@ internal sealed class NewProjectDialog : Window
         var folder = Path.Combine(Location.Text, name);
         if (File.Exists(folder) || Directory.Exists(folder)) throw new InvalidDataException("That project folder already exists. Choose a new name or location.");
         var state = StartingPoint.SelectedIndex == 1;
+        var current = StartingPoint.SelectedIndex == 2 && _currentPlayRom != null;
         if (state && !File.Exists(StatePath.Text)) throw new InvalidDataException("Select a TAS Studio save state (.tasstate).");
         long utc = 946684800;
-        if (!state)
+        if (!state && !current)
         {
             if (!DateTimeOffset.TryParseExact(Utc.Text, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture,
                     DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var date)) throw new InvalidDataException("Enter UTC as yyyy-MM-dd HH:mm:ss.");
             utc = date.ToUnixTimeSeconds(); new EmulationConfiguration { StartUtcSeconds = utc }.ValidatedCopy();
         }
-        return new(Path.Combine(folder, name + ".tasproj"), Path.GetFullPath(Rom.Text!), utc, state ? Path.GetFullPath(StatePath.Text!) : null);
+        return new(Path.Combine(folder, name + ".tasproj"), Path.GetFullPath(Rom.Text!), utc, state ? Path.GetFullPath(StatePath.Text!) : null, current);
     }
     private async Task<string?> Pick(string title, string[] patterns)
     {

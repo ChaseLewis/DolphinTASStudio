@@ -85,7 +85,7 @@ internal static class ExperimentResume
 
     private static ExperimentResult? ReadResult(string path, int index)
     {
-        if (!File.Exists(path)) return null;
+        if (!ExperimentFiles.Exists(path)) return null;
         var result = ExperimentFiles.Read<ExperimentResult>(path);
         if (result.Index != index) throw new InvalidDataException("Trial result index mismatch: " + path);
         return result;

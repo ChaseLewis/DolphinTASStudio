@@ -24,6 +24,10 @@ public sealed partial class MainWindow
         actions.Children.Add(ActionButton("Save state…  Ctrl+S", SaveStateFile, Playing));
         actions.Children.Add(ActionButton("Load state…", LoadStateFile, Playing));
         actions.Children.Add(ActionButton("Memory cards…", ManagePlayMemoryCards, Playing));
+        var startTas = ActionButton("Start TAS here…", NewProject, Playing);
+        startTas.Name = "StartTasHere";
+        ToolTip.SetTip(startTas, "Create a TAS project from this exact Play position, including the memory card.");
+        actions.Children.Add(startTas);
         actions.Children.Add(ActionButton("Stop game", StopPlay, Playing));
         actions.Children.Add(_manualPosition); root.Children.Add(actions);
         var display = new Viewbox { Stretch = Stretch.Uniform, Child = new Border { Width = GameCubeDisplayWidth, Height = GameCubeDisplayHeight, Child = _manualViewport } };
@@ -59,26 +63,37 @@ public sealed partial class MainWindow
         void UpdatePath() => location.Text = PlayMemoryCards.CardPath(options, (string)region.SelectedItem!);
         region.SelectionChanged += (_, _) => UpdatePath(); UpdatePath();
         var import = new Button { Content = "Import card copy & restart…" };
+        var importFolder = new Button { Name = "ImportGciFolder", Content = "Import GCI folder…" };
         var export = new Button { Content = "Export card…" };
         var close = new Button { Content = "Close" }; close.Click += (_, _) => dialog.Close();
         var working = false;
         dialog.Closing += (_, e) => e.Cancel = working;
         var type = new FilePickerFileType("GameCube raw memory card") { Patterns = ["*.raw"] };
-        async Task Transfer(bool importing)
+        async Task Transfer(bool importing, bool folder = false)
         {
             if (working) return;
-            working = true; import.IsEnabled = export.IsEnabled = close.IsEnabled = region.IsEnabled = false;
+            working = true; import.IsEnabled = importFolder.IsEnabled = export.IsEnabled = close.IsEnabled = region.IsEnabled = false;
             try
             {
                 var selectedRegion = (string)region.SelectedItem!;
                 if (importing)
                 {
-                    var files = await dialog.StorageProvider.OpenFilePickerAsync(new() { Title = "Import a raw card copy and restart the game", AllowMultiple = false, FileTypeFilter = [type] });
-                    if (files.FirstOrDefault()?.TryGetLocalPath() is not { } path) return;
-                    await WithGameLoading(() => _execution.ImportPlayMemoryCardAsync(selectedRegion, path), dialog);
+                    var imported = 0;
+                    if (folder)
+                    {
+                        var folders = await dialog.StorageProvider.OpenFolderPickerAsync(new() { Title = "Import copies of the GCI saves in Card A", AllowMultiple = false });
+                        if (folders.FirstOrDefault()?.TryGetLocalPath() is not { } path) return;
+                        await WithGameLoading(async () => { imported = await _execution.ImportPlayMemoryCardFolderAsync(selectedRegion, path); }, dialog);
+                    }
+                    else
+                    {
+                        var files = await dialog.StorageProvider.OpenFilePickerAsync(new() { Title = "Import a raw card copy and restart the game", AllowMultiple = false, FileTypeFilter = [type] });
+                        if (files.FirstOrDefault()?.TryGetLocalPath() is not { } path) return;
+                        await WithGameLoading(() => _execution.ImportPlayMemoryCardAsync(selectedRegion, path), dialog);
+                    }
                     await RememberPlayConfiguration();
                     options = (await _execution.GetConfigurationAsync())!.Options; UpdatePath();
-                    message.Text = "Imported a copy and restarted the game. Play is paused.";
+                    message.Text = folder ? $"Imported {imported} save copies and restarted the game. Play to load a save, then choose Start TAS here." : "Imported a copy and restarted the game. Play is paused.";
                 }
                 else
                 {
@@ -89,16 +104,18 @@ public sealed partial class MainWindow
                 }
             }
             catch (Exception ex) { message.Text = ex.Message; }
-            finally { working = false; import.IsEnabled = export.IsEnabled = close.IsEnabled = region.IsEnabled = true; }
+            finally { working = false; import.IsEnabled = importFolder.IsEnabled = export.IsEnabled = close.IsEnabled = region.IsEnabled = true; }
         }
         import.Click += async (_, _) => await Transfer(true);
+        importFolder.Click += async (_, _) => await Transfer(true, true);
         export.Click += async (_, _) => await Transfer(false);
         dialog.Content = new StackPanel { Margin = new Thickness(22), Spacing = 14, Children =
         {
             new TextBlock { Text = "Persistent memory cards", FontSize = 22 },
             new TextBlock { Text = "Choose your game's region. In-game saves persist in Slot A. Import copies a 59–2043 block .raw card and restarts the game; any replaced card is kept as a .bak file. Export flushes pending writes and restores your play position.", TextWrapping = TextWrapping.Wrap },
-            region, location, Row(import, export),
-            new TextBlock { Text = "Loading a save state also rewinds the memory card. Export a card before restoring older progress if you want to keep both versions. Create a TAS project from a .tasstate to use it in experiments.", TextWrapping = TextWrapping.Wrap },
+            new TextBlock { Text = "Import GCI folder copies the saves from Dolphin's GC/<region>/Card A folder into a new card. The source folder stays unchanged; later saves belong to Studio's Play card.", TextWrapping = TextWrapping.Wrap },
+            region, location, Row(import, importFolder, export),
+            new TextBlock { Text = "Loading a save state also rewinds the memory card. Export a card before restoring older progress if you want to keep both versions. Start TAS here captures your current game position and card for experiments.", TextWrapping = TextWrapping.Wrap },
             message, close
         } };
         _dialogOpen = true;

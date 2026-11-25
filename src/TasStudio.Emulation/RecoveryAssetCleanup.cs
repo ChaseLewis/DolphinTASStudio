@@ -13,7 +13,7 @@ public static class RecoveryAssetCleanup
 {
     private const long MaximumJsonBytes = 64 * 1024 * 1024;
     private static readonly StringComparer Paths = StringComparer.OrdinalIgnoreCase;
-    private static readonly Regex Generated = new(@"^(inputs|timelines)/([A-Fa-f0-9]{64})\.json$", RegexOptions.CultureInvariant);
+    private static readonly Regex Generated = new(@"^(inputs|timelines)/([A-Fa-f0-9]{64})\.json(?:\.gz)?$", RegexOptions.CultureInvariant);
     public sealed class Previous
     {
         internal string Path { get; }

@@ -32,6 +32,27 @@ September 11, 2026.
   late batches after execution/definition changes are discarded. Playback sampling
   is not enabled in this iteration. Each batch is capped at 1024 watches.
 
+## Recorded memory edits (October 12, 2026)
+
+Red diamonds in the timeline's saved-state strip mark recorded memory writes.
+Multiple writes at a boundary share a diamond with a count. Overlapping save
+states and diamonds are offset vertically so each remains clickable. Hover for
+addresses and written bytes; click to inspect writes in replay order and remove
+one or clear that boundary. The timeline menu and popover also offer **Clear all
+memory edits…**, with the total count before confirmation.
+
+Clearing affects Active playback, including writes outside the visible timeline.
+It preserves controller inputs and reset events, invalidates dependent states,
+and rebuilds the current preview. Each removal supports Undo/Redo. It does not
+reverse changes baked into the initial savestate or modify experiment sources.
+An interrupted/failed rebuild leaves the removal undoable and the preview stale
+until successfully sought. The redundant Input polls / Frame groups label is
+removed; ruler numbers and cursor information remain.
+
+Managed coverage in `MemoryEditTests` exercises removal scopes, same-boundary
+writes, future writes, stale receipts, replay failure, undo/redo, save/reopen,
+marker hit testing, and the popover/clear-all interaction using the fake backend.
+
 ## Storage
 
 Edits save atomically as JSON. For a saved project the file is

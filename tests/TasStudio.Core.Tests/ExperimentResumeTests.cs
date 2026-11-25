@@ -31,7 +31,7 @@ public sealed class ExperimentResumeTests
         File.WriteAllText(Path.Combine(batch, "cancel"), "cancel");
         Directory.CreateDirectory(Path.Combine(batch, "run-00002"));
         File.WriteAllText(Path.Combine(batch, "run-00002", "cancel"), "cancel");
-        File.Delete(Receipt(batch, 0)); // SQLite alone must be enough to skip this trial.
+        File.Delete(ExperimentFiles.ExistingPath(Receipt(batch, 0))); // SQLite alone must be enough to skip this trial.
         var launches = new List<string>();
         ExperimentJob? launched = null;
         using var cancel = new CancellationTokenSource();
@@ -48,7 +48,7 @@ public sealed class ExperimentResumeTests
         Assert.Equal(first.Position, results[0].Position);
         Assert.Equal(first.Frame, results[0].Frame);
         Assert.False(Directory.Exists(Path.Combine(batch, "run-00001")));
-        Assert.True(File.Exists(Receipt(batch, 3))); // Failed trial evidence stays.
+        Assert.True(ExperimentFiles.Exists(Receipt(batch, 3))); // Failed trial evidence stays.
         Assert.DoesNotContain(launches, s => s.Contains("Trial 0") || s.Contains("Trial 2") || s.Contains("Trial 3") || s.Contains("Trial 4"));
         Assert.Contains(launches, s => s.Contains("Trial 1"));
         var job = Assert.IsType<ExperimentJob>(launched);

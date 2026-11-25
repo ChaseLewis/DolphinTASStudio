@@ -2,6 +2,7 @@ const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+const { gunzipSync } = require('node:zlib');
 exports.run = async function () {
   const root = vscode.workspace.workspaceFolders[0].uri;
   const extension = vscode.extensions.getExtension('tas-studio.experiments');
@@ -10,7 +11,7 @@ exports.run = async function () {
   assert.ok(commands.includes('tasStudio.run'));
   await vscode.commands.executeCommand('tasStudio.run', vscode.Uri.joinPath(root, 'experiment.tascsharp.json'));
   const batches = await fs.readdir(path.join(root.fsPath, '.runs')); assert.equal(batches.length, 1);
-  const results = JSON.parse(await fs.readFile(path.join(root.fsPath, '.runs', batches[0], 'results.json'), 'utf8'));
+  const results = JSON.parse(gunzipSync(await fs.readFile(path.join(root.fsPath, '.runs', batches[0], 'results.json.gz'))).toString('utf8'));
   assert.equal(results.length, 1); assert.equal(results[0].Status, 'completed', JSON.stringify(results));
   await vscode.commands.executeCommand('tasStudio.refresh');
   await vscode.commands.executeCommand('tasStudio.cancel'); // No pending jobs is a harmless no-op.

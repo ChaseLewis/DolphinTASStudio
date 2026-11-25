@@ -29,8 +29,8 @@ public sealed partial class MainWindow
     {
         var active = _workspaceWindows.FirstOrDefault(window => window.IsActive);
         var keyboard = active != null && !IsEditingText(active);
-        _input.SetAcceptInput(!_homeVisible && !_dialogOpen && !_closingApproved && active != null &&
-            (keyboard || UsesControllerInput || _execution.IsManualPlay), acceptKeyboard: keyboard);
+        _input.SetAcceptInput((!_movieMode || _execution.IsTakingOver) && !_homeVisible && !_dialogOpen && !_closingApproved && active != null &&
+            (keyboard || UsesControllerInput || _execution.IsManualPlay || _execution.IsTakingOver), acceptKeyboard: keyboard);
     }
 
     private bool TryMoveTimelineCursor(Window window, KeyEventArgs e)
@@ -56,6 +56,8 @@ public sealed partial class MainWindow
     private void AttachInputEvents(Window window)
     {
         if (!_workspaceWindows.Add(window)) return;
+        // Composite docking fades as a whole so overlapping vector shapes remain opaque.
+        Avalonia.Media.RenderOptions.SetRequiresFullOpacityHandling(window, true);
         window.AddHandler(KeyDownEvent, HandleKeyDown, RoutingStrategies.Tunnel);
         window.AddHandler(KeyUpEvent, (_, e) =>
         {
@@ -66,9 +68,13 @@ public sealed partial class MainWindow
         window.AddHandler(GotFocusEvent, (_, _) => UpdateInputAcceptance(), RoutingStrategies.Bubble);
         window.AddHandler(LostFocusEvent, (_, _) => UpdateInputAcceptance(), RoutingStrategies.Bubble);
         // Activated is raised before IsActive becomes true; observe the settled property instead.
-        window.PropertyChanged += (_, change) => { if (change.Property == IsActiveProperty) UpdateInputAcceptance(); };
+        window.PropertyChanged += (_, change) =>
+        {
+            if (change.Property == IsActiveProperty) UpdateInputAcceptance();
+            if (change.Property == WindowStateProperty || change.Property == IsVisibleProperty) RestartVideoPresentation();
+        };
         window.Deactivated += (_, _) => { StopHeldAdvance(); _suppressF11UntilRelease = false; UpdateInputAcceptance(); };
-        window.Closed += (_, _) => { StopHeldAdvance(); _workspaceWindows.Remove(window); UpdateInputAcceptance(); };
+        window.Closed += (_, _) => { StopHeldAdvance(); _workspaceWindows.Remove(window); UpdateInputAcceptance(); RestartVideoPresentation(); };
     }
 
     private void ToggleGameWindow()

@@ -7,6 +7,7 @@ internal static class TrialExecution
 {
     public static async Task<int> RunAsync(ExperimentJob job, CancellationToken token = default, Action<VideoFrame>? showFrame = null)
     {
+        using var storage = job.BatchDirectory == null ? null : ExperimentStorage.HoldBatch(job.BatchDirectory);
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
         cancellation.CancelAfter(TimeSpan.FromSeconds(job.TimeoutSeconds));
         ConsoleCancelEventHandler cancelKey = (_, e) => { e.Cancel = true; cancellation.Cancel(); };

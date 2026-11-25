@@ -40,6 +40,7 @@ internal static class RealtimePlayback
         }
         var expectedRam = Ram();
         Console.WriteLine($"Unpaced baseline: {groups} groups, {packetSignal} packets with audio signal.");
+        VerifyRestoreClearsAudio(backend, baseline, recorded);
         backend.Restore(baseline);
         var source = backend.StartRealtimePlayback();
         IAudioSource currentSource = source;
@@ -114,5 +115,34 @@ internal static class RealtimePlayback
             cancellation.Cancel(); consumer.GetAwaiter().GetResult();
             File.WriteAllText(Path.Combine(output, "timings.json"), JsonSerializer.Serialize(rows));
         }
+    }
+
+    private static void VerifyRestoreClearsAudio(DolphinBackend backend, EmulatorSnapshot baseline,
+        IReadOnlyList<InputPollFrame> recorded)
+    {
+        backend.Restore(baseline);
+        var source = backend.StartRealtimePlayback();
+        try
+        {
+            var samples = new short[source.SampleRate / 100 * 2];
+            foreach (var frame in recorded)
+            {
+                backend.ReplayInputPollFrame(frame);
+                source.Read(samples, samples.Length);
+                if (!samples.Any(sample => sample != 0)) continue;
+
+                // Keep the same source and mode: a pause/resume would clear the
+                // mixer independently and conceal stale output left by Restore.
+                backend.Restore(baseline);
+                Array.Fill(samples, (short)123);
+                source.Read(samples, samples.Length);
+                if (samples.Any(sample => sample != 0))
+                    throw new Exception("State restore left stale audio in Dolphin's mixer.");
+                Console.WriteLine("PASS: state restore clears mixer output before any new emulation.");
+                return;
+            }
+            throw new Exception("No audio signal available to verify the restore flush.");
+        }
+        finally { backend.StopRealtimePlayback(); }
     }
 }

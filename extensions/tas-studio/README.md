@@ -10,7 +10,13 @@ isolated trials; Cancel stops the current batches. Query successful typed result
 in SQLite; retained failed-trial projects can be opened in Studio for debugging.
 Install Microsoft's C# extension for IntelliSense and debugging.
 
-Each run snapshots the saved source project and compiled dependencies. Save input
+Configurations and batches display the name from `experiment.identity.json`, or
+the experiment folder name when that identity is absent. Run config `Name` and
+`DisplayName` fields never rename the experiment; `Name` describes a batch.
+Run folders appear as secondary details, so the experiment keeps the same label on each rerun.
+
+Each run snapshots the saved source project's movie, the one state it starts from
+(not the project's other states) and compiled dependencies. Save input
 edits in Studio before running: this version does not connect to its unsaved
 in-memory session. Failed-trial logs are in `.runs/<batch>/run-00001/` (or its latest attempt folder).
 Structured `context.Log(...)` entries are in `output.jsonl`; console output and
@@ -21,7 +27,8 @@ Implement `IExperiment<YourResult>` to store typed results automatically in the 
 contains statuses/errors; `results` contains successful typed values. Both use the
 runner's `trial_index` primary key. Nested objects and collections are JSONB columns.
 
-Use **Resume Experiment Batch** on a batch in the TAS Experiments view, or from
+For an interrupted batch whose source snapshot has not been cleaned, use
+**Resume Experiment Batch** on a batch in the TAS Experiments view, or from
 the Command Palette. Resume reuses the saved movie, compiled script and parameters;
 it does not rebuild your current source. Completed trials are skipped by index,
 including trials that finished out of order. Interrupted/cancelled and unstarted
@@ -37,13 +44,22 @@ preserve artifacts for recovery. New attempts use `run-00001/attempts/`. The ori
 indices stay fixed, preserving index-based UTC. A batch can have only one coordinator.
 Keep the same emulator build: new batches check runtime hashes on resume; older
 batches without hashes display a warning. The compiled snapshot and result schema
-are checked before scheduling. Batches appear even if a crash prevented results.json.
+are checked before scheduling. Batches appear even if a crash prevented results.json.gz.
+New result receipts are gzip compressed; the tree also reads older plain results.json files.
 
 CLI equivalent: `TasStudio.Worker.exe resume-csharp "path/to/.runs/batch"`.
 
 Cancellation stops scheduling immediately and waits for in-flight workers. Unstarted
-indices have no result rows or folders and remain pending for resume. To clean an
-older stopped batch, run `TasStudio.Worker.exe clean-csharp "path/to/.runs/batch"`.
+indices have no result rows or folders. Each batch starts in a fresh folder and
+cleans its temporary source snapshots, trial states, profiles and result projects
+when it exits, including cancellation or failure. Results, top plays and logs stay.
+A cleaned batch cannot resume; start a new batch instead. Active workers and batches
+with failed result writes protect their temporary files from cleanup.
+
+Use `TasStudio.Worker.exe clean-batch "path/to/.runs/batch" --dry-run` to preview
+cleanup of an older batch; omit `--dry-run` to remove its temporary snapshots too.
+For the narrower legacy cleanup of an older stopped batch, run
+`TasStudio.Worker.exe clean-csharp "path/to/.runs/batch"`.
 This removes committed successful artifacts and old synthetic "cancelled before
 launch" placeholders, preserving actual failures and interrupted work. It refuses
 to clean a batch while its coordinator is running.

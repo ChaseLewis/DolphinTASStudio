@@ -40,6 +40,7 @@ public sealed record ExperimentJob(string Name, string SourceProject, string Cor
     bool KeepSuccessfulArtifact = true)
 {
     public ExperimentTopPlays? TopPlays { get; init; }
+    public string? BatchDirectory { get; init; }
 }
 public sealed record ExperimentResult(string Name, string Status, string? Error, DateTimeOffset Started, double WallSeconds,
     ulong Position, ulong Frame, double EmulatedSeconds, JsonElement? Value, string? ProjectPath, int Index)
@@ -55,10 +56,18 @@ public static class ExperimentFiles
     public static readonly JsonSerializerOptions Json = new() { WriteIndented = true, PropertyNameCaseInsensitive = true, Converters = { new JsonStringEnumConverter() } };
     public static void Write<T>(string path, T value)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        File.WriteAllText(path + ".tmp", JsonSerializer.Serialize(value, Json)); File.Move(path + ".tmp", path, true);
+        var compressed = Path.GetFileName(path) is "result.json" or "results.json";
+        CompressedJson.Write(compressed ? path + ".gz" : path, value, Json);
+        // Commit the compressed receipt before retiring its legacy copy.
+        if (compressed && File.Exists(path)) File.Delete(path);
     }
-    public static T Read<T>(string path) => JsonSerializer.Deserialize<T>(File.ReadAllText(path), Json) ?? throw new InvalidDataException("Empty " + path);
+    public static string ExistingPath(string path) => File.Exists(path + ".gz") ? path + ".gz" : path;
+    public static bool Exists(string path) => File.Exists(ExistingPath(path));
+    public static T Read<T>(string path)
+    {
+        using var stream = CompressedJson.OpenRead(ExistingPath(path));
+        return JsonSerializer.Deserialize<T>(stream, Json) ?? throw new InvalidDataException("Empty " + path);
+    }
 
 }
 
@@ -95,8 +104,8 @@ public static class ExperimentWorker
         {
             token.ThrowIfCancellationRequested();
             job.TopPlays?.Validate();
-            var source = FolderProject.Load(job.SourceProject);
-            var metadata = source.Archive.Metadata;
+            // Settings only: LoadProjectAsync below reads and verifies the movie once.
+            var metadata = FolderProject.LoadEnvironment(job.SourceProject);
             var config = metadata.Configuration ?? EmulationConfiguration.FromLegacy(metadata.InternalResolution, metadata.DspHle);
             var initialization = new ExperimentInitializationContext(job.Index, job.Count, job.Parameters,
                 job.Start == ExperimentStart.Boot ? ExperimentStartingPoint.PowerOn : ExperimentStartingPoint.SaveState,
@@ -113,7 +122,8 @@ public static class ExperimentWorker
             var options = new BackendOptions(job.CorePath, job.SystemDirectory, Path.Combine(job.OutputDirectory, "profile"));
             // Runtime provenance is advisory, just as when opening the project in Studio.
             // ROM/settings/integrity, native restore and recorded-poll validation still apply.
-            await execution.LoadProjectAsync(job.SourceProject, options, positionOverride: 0, powerOnConfiguration: job.Start == ExperimentStart.Boot ? config : null);
+            using (PerfLog.Time("experiment.trial-load"))
+                await execution.LoadProjectAsync(job.SourceProject, options, positionOverride: 0, powerOnConfiguration: job.Start == ExperimentStart.Boot ? config : null, isolatedMemoryCard: true);
             ReportCompatibilityWarning();
             var originalMovie = execution.Inputs.ToArray();
             token.ThrowIfCancellationRequested();
@@ -142,6 +152,8 @@ public static class ExperimentWorker
                 await using var emulator = new ExperimentEmulator(execution, lifetime.Token);
                 var anchor = job.TopPlays == null ? null : await execution.CapturePlayAnchorAsync();
                 var submitted = 0;
+                using var livePlays = job.TopPlays != null && job.BatchDirectory != null ? new ExperimentLivePlays(job, started) : null;
+                var submissionIndex = livePlays?.NextSubmissionIndex ?? 0;
                 async Task Submit(double score, string? name, CancellationToken cancellation)
                 {
                     if (job.TopPlays == null) return;
@@ -149,8 +161,10 @@ public static class ExperimentWorker
                     {
                         cancellation.ThrowIfCancellationRequested();
                         if (name is { Length: > 200 }) throw new ArgumentException("Play names must be at most 200 characters.");
-                        var play = await execution.CapturePlayAsync(anchor!, submitted, name ?? job.Name, score);
-                        cancellation.ThrowIfCancellationRequested();
+                        var play = await execution.CapturePlayAsync(anchor!, submissionIndex, name ?? job.Name, score);
+                        // Once capture succeeds, finish this atomic commit even if cancellation arrives.
+                        livePlays?.Save(play);
+                        submissionIndex = checked(submissionIndex + 1);
                         submitted = checked(submitted + 1);
                         plays.Add(play);
                         var best = job.TopPlays.Rank(plays).Take(job.TopPlays.Keep).ToArray();
@@ -240,21 +254,33 @@ public static class ExperimentRunner
 
     public static async Task<ExperimentResult[]> RunAsync(ExperimentDefinition definition, string sourceProject, string batchDirectory,
         string workerExecutable, string corePath, string systemDirectory, Action<string>? progress, CancellationToken token)
-        => await RunBatchAsync(definition, sourceProject, batchDirectory, workerExecutable, corePath, systemDirectory, progress, token, false);
+        => await RunWithCleanupAsync(definition, sourceProject, batchDirectory, workerExecutable, corePath, systemDirectory, progress, token, false);
 
     public static Task<ExperimentResult[]> ResumeAsync(string batchDirectory, string workerExecutable,
         string corePath, string systemDirectory, Action<string>? progress, CancellationToken token)
     {
         batchDirectory = Path.GetFullPath(batchDirectory);
+        ExperimentStorage.RequireSnapshots(batchDirectory);
         var definition = ExperimentFiles.Read<ExperimentDefinition>(Path.Combine(batchDirectory, "experiment.json"));
         if (definition.AssemblyPath == null) throw new InvalidDataException("Resume requires a typed C# experiment batch.");
         definition = definition with { AssemblyPath = Path.Combine(batchDirectory, "assembly", Path.GetFileName(definition.AssemblyPath)) };
-        return RunBatchAsync(definition, Path.Combine(batchDirectory, "source", "project.tasproj"),
+        return RunWithCleanupAsync(definition, Path.Combine(batchDirectory, "source", "project.tasproj"),
             batchDirectory, workerExecutable, corePath, systemDirectory, progress, token, true);
     }
 
-    private static async Task<ExperimentResult[]> RunBatchAsync(ExperimentDefinition definition, string sourceProject, string batchDirectory,
+    private static async Task<ExperimentResult[]> RunWithCleanupAsync(ExperimentDefinition definition, string sourceProject, string batchDirectory,
         string workerExecutable, string corePath, string systemDirectory, Action<string>? progress, CancellationToken token, bool resume)
+    {
+        var storage = ExperimentStorage.HoldBatch(batchDirectory);
+        var started = false;
+        ExperimentResult[] results;
+        try { results = await RunBatchAsync(definition, sourceProject, batchDirectory, workerExecutable, corePath, systemDirectory, progress, token, resume, () => started = true); }
+        finally { storage.Dispose(); if (started) ExperimentStorage.CleanBatch(batchDirectory, progress); }
+        return results.Select(result => result.ProjectPath != null && !File.Exists(result.ProjectPath) ? result with { ProjectPath = null } : result).ToArray();
+    }
+
+    private static async Task<ExperimentResult[]> RunBatchAsync(ExperimentDefinition definition, string sourceProject, string batchDirectory,
+        string workerExecutable, string corePath, string systemDirectory, Action<string>? progress, CancellationToken token, bool resume, Action started)
     {
         definition.Validate();
         Directory.CreateDirectory(batchDirectory);
@@ -264,6 +290,7 @@ public static class ExperimentRunner
         ExperimentResume.CheckRuntime(batchDirectory, workerExecutable, corePath, resume, progress);
         if (resume)
         {
+            ExperimentStorage.RequireSnapshots(batchDirectory);
             ExperimentResume.ValidateSnapshot(batchDirectory, sourceProject);
             // A cancelled batch's old signal must not cancel the resumed coordinator.
             File.Delete(Path.Combine(batchDirectory, "cancel"));
@@ -317,6 +344,7 @@ public static class ExperimentRunner
             }
             progress?.Invoke($"Resuming batch: {recovered.Count}/{results.Length} trials already finished; {results.Length - recovered.Count} remaining.");
         }
+        started();
         await ExperimentScheduler.RunAsync(definition.Trials.Length, definition.Parallelism, async index =>
         {
             if (results[index] != null || token.IsCancellationRequested) return;
@@ -327,7 +355,7 @@ public static class ExperimentRunner
             var job = new ExperimentJob(trial.Name, sourceProject, corePath, systemDirectory, directory, definition.Start,
                 definition.StateId, trial.StartUtcSeconds ?? definition.StartUtcSeconds, trial.Parameters, definition.TimeoutSeconds, index, definition.Trials.Length,
                 definition.PrerollSeconds, definition.PrerollGroups, experimentAssembly, definition.TypeName, definition.Headless, KeepSuccessfulArtifact: writer == null)
-                { TopPlays = definition.TopPlays };
+                { TopPlays = definition.TopPlays, BatchDirectory = Path.GetFullPath(batchDirectory) };
             ExperimentFiles.Write(Path.Combine(directory, "job.json"), job);
             if (resume) ExperimentFiles.Write(Path.Combine(trialDirectory, "job.json"), job);
             progress?.Invoke($"Starting {index + 1}/{definition.Trials.Length}: {trial.Name}");
@@ -343,7 +371,7 @@ public static class ExperimentRunner
         if (!writerErrors.IsEmpty)
         {
             ExperimentFiles.Write(Path.Combine(batchDirectory, "writer-errors.json"), writerErrors.ToArray());
-            throw new IOException("Some results could not be written to SQLite. Original results are preserved in results.json; see writer-errors.json.");
+            throw new IOException("Some results could not be written to SQLite. Original results are preserved in results.json.gz; see writer-errors.json.");
         }
         return recorded;
     }
@@ -389,7 +417,7 @@ public static class ExperimentRunner
             outputCopy = process.StandardOutput.BaseStream.CopyToAsync(stdout);
             errorCopy = process.StandardError.BaseStream.CopyToAsync(stderr);
             await process.WaitForExitAsync(deadline.Token);
-            if (File.Exists(resultFile)) return ExperimentFiles.Read<ExperimentResult>(resultFile);
+            if (ExperimentFiles.Exists(resultFile)) return ExperimentFiles.Read<ExperimentResult>(resultFile);
             failure = $"Worker exited with code {process.ExitCode} without a result.";
         }
         catch (OperationCanceledException)
@@ -410,7 +438,7 @@ public static class ExperimentRunner
             }
             await Task.WhenAll(outputCopy, errorCopy);
         }
-        var prior = File.Exists(resultFile) ? ExperimentFiles.Read<ExperimentResult>(resultFile) : null;
+        var prior = ExperimentFiles.Exists(resultFile) ? ExperimentFiles.Read<ExperimentResult>(resultFile) : null;
         var result = prior is null ? new ExperimentResult(job.Name, status, failure, started, timer.Elapsed.TotalSeconds, 0, 0, 0, null, null, job.Index) : prior with { Status = status, Error = failure };
         ExperimentFiles.Write(resultFile, result); return result;
     }

@@ -1,10 +1,38 @@
 const vscode = require('vscode');
 const path = require('node:path');
 const fs = require('node:fs/promises');
+const { gunzipSync } = require('node:zlib');
 const { spawn } = require('node:child_process');
 const { batchDirectory, runArguments, readResult } = require('./helpers');
 const active = new Map();
 let output, changed;
+
+async function configuredName(file, field) {
+  try {
+    const config = JSON.parse(await fs.readFile(file, 'utf8'));
+    const name = Object.entries(config).find(([key]) => key.toLowerCase() === field.toLowerCase())?.[1];
+    if (typeof name === 'string' && name.trim()) return name.trim();
+  } catch { /* Keep incomplete or older runs visible. */ }
+}
+async function experimentName(uri) {
+  const folder = path.dirname(uri.fsPath);
+  // Run configs are replaceable. Only the separate experiment identity can rename a recipe.
+  for (let parent = folder; path.dirname(parent) !== parent; parent = path.dirname(parent)) {
+    if (path.basename(parent).toLowerCase() !== '.runs') continue;
+    const experiment = path.dirname(parent);
+    return await configuredName(path.join(experiment, 'experiment.identity.json'), 'Name') || path.basename(experiment);
+  }
+  if (uri.fsPath.endsWith('.tascsharp.json'))
+    return await configuredName(path.join(folder, 'experiment.identity.json'), 'Name') || path.basename(folder);
+  // Detached batches use a separate identity snapshot, never fields in run configs.
+  const identities = [path.join(folder, 'experiment.identity.json')];
+  if (path.basename(folder).toLowerCase() === 'batch') identities.push(path.join(path.dirname(folder), 'experiment.identity.json'));
+  for (const identity of identities) {
+    const name = await configuredName(identity, 'Name');
+    if (name) return name;
+  }
+  return 'Experiment';
+}
 
 function workerFor(uri) {
   const worker = vscode.workspace.getConfiguration('tasStudio', uri).get('workerPath');
@@ -26,7 +54,8 @@ async function pickExperiment(item) {
   const editor = vscode.window.activeTextEditor;
   if (editor?.document.uri.fsPath.endsWith('.tascsharp.json')) return editor.document.uri;
   const files = await vscode.workspace.findFiles('**/*.tascsharp.json', '**/{bin,obj,.runs}/**');
-  const selected = await vscode.window.showQuickPick(files.map(uri => ({ label: vscode.workspace.asRelativePath(uri), uri })), { placeHolder: 'Choose an experiment' });
+  const selected = await vscode.window.showQuickPick(await Promise.all(files.map(async uri => ({
+    label: await experimentName(uri), description: vscode.workspace.asRelativePath(uri), uri }))), { placeHolder: 'Choose an experiment' });
   return selected?.uri;
 }
 async function run(item) {
@@ -42,8 +71,8 @@ async function resume(item) {
   if (item?.kind === 'batch') directory = path.dirname(item.uri.fsPath);
   else {
     const files = await vscode.workspace.findFiles('**/.runs/*/experiment.json', null, 1000);
-    const selected = await vscode.window.showQuickPick(files.sort((a, b) => b.fsPath.localeCompare(a.fsPath))
-      .map(uri => ({ label: vscode.workspace.asRelativePath(path.dirname(uri.fsPath)), uri })),
+    const selected = await vscode.window.showQuickPick(await Promise.all(files.sort((a, b) => b.fsPath.localeCompare(a.fsPath))
+      .map(async uri => ({ label: await experimentName(uri), description: vscode.workspace.asRelativePath(path.dirname(uri.fsPath)), uri }))),
       { placeHolder: 'Resume a saved batch using its original script and movie' });
     if (!selected) return;
     directory = path.dirname(selected.uri.fsPath);
@@ -72,8 +101,10 @@ class Experiments {
   getTreeItem(node) {
     const item = new vscode.TreeItem(node.label, node.kind === 'batch' ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
     item.contextValue = node.kind;
+    item.description = node.description;
+    item.tooltip = node.uri.fsPath;
     if (node.kind === 'experiment') {
-      item.description = active.has(node.uri.fsPath) ? 'Running' : '';
+      item.description = (active.has(node.uri.fsPath) ? 'Running · ' : '') + node.description;
       item.resourceUri = node.uri; item.command = { command: 'vscode.open', title: 'Edit configuration', arguments: [node.uri] };
     }
     if (node.result) { item.description = node.result.Status; item.tooltip = node.result.Error || node.result.Name; }
@@ -81,7 +112,10 @@ class Experiments {
   }
   async getChildren(node) {
     if (node?.kind === 'batch') {
-      const text = await fs.readFile(node.uri.fsPath, 'utf8').catch(error => { if (error.code === 'ENOENT') return '[]'; throw error; });
+      const text = await fs.readFile(node.uri.fsPath + '.gz').then(data => gunzipSync(data).toString('utf8')).catch(async error => {
+        if (error.code !== 'ENOENT') throw error;
+        return fs.readFile(node.uri.fsPath, 'utf8').catch(plainError => { if (plainError.code === 'ENOENT') return '[]'; throw plainError; });
+      });
       const results = readResult(JSON.parse(text));
       return Promise.all(results.map(async result => {
         const trial = path.join(path.dirname(node.uri.fsPath), 'run-' + String(result.Index + 1).padStart(5, '0'));
@@ -97,9 +131,9 @@ class Experiments {
     const scripts = await vscode.workspace.findFiles('**/*.tascsharp.json', '**/{bin,obj,.runs}/**');
     const batches = await vscode.workspace.findFiles('**/.runs/*/experiment.json', null, 1000);
     return [
-      ...scripts.map(uri => ({ kind: 'experiment', label: vscode.workspace.asRelativePath(uri), uri })),
-      ...batches.sort((a, b) => b.fsPath.localeCompare(a.fsPath)).map(uri => ({ kind: 'batch', label: path.basename(path.dirname(uri.fsPath)),
-        uri: vscode.Uri.file(path.join(path.dirname(uri.fsPath), 'results.json')) }))
+      ...await Promise.all(scripts.map(async uri => ({ kind: 'experiment', label: await experimentName(uri), description: vscode.workspace.asRelativePath(uri), uri }))),
+      ...await Promise.all(batches.sort((a, b) => b.fsPath.localeCompare(a.fsPath)).map(async uri => ({ kind: 'batch', label: await experimentName(uri),
+        description: 'Run: ' + path.basename(path.dirname(uri.fsPath)), uri: vscode.Uri.file(path.join(path.dirname(uri.fsPath), 'results.json')) })))
     ];
   }
 }
@@ -141,7 +175,7 @@ function activate(context) {
     if (await invoke(worker, ['new-csharp', source.fsPath, directory]) !== 0) throw new Error('Workspace creation failed. See TAS Experiments output.');
     await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(directory), { forceNewWindow: true });
   });
-  const watcher = vscode.workspace.createFileSystemWatcher('**/{*.tascsharp.json,experiment.json,results.json}');
+  const watcher = vscode.workspace.createFileSystemWatcher('**/{*.tascsharp.json,experiment.identity.json,experiment.json,results.json,results.json.gz}');
   watcher.onDidCreate(() => changed.fire()); watcher.onDidChange(() => changed.fire()); watcher.onDidDelete(() => changed.fire());
   context.subscriptions.push(watcher);
 }

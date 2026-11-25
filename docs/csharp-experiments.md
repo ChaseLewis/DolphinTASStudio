@@ -49,7 +49,19 @@ Run saves the project, snapshots the source state and request, then
 launches the worker in a separate process with a nonmodal output/cancel window.
 Each run has its own `experiments/<name>/.runs/<run>/` folder, containing the
 request, source snapshot, `worker.log`, and a `batch/` directory with the normal
-results and resume data. Closing the run window requests cancellation.
+results and temporary source data. Closing the run window requests cancellation.
+The source snapshot is a private copy of the movie plus the one state the
+experiment starts from; the project's other named states and checkpoints are not
+copied. Workers read only that copy and never write to the source project —
+results reach it only when you apply a play in Studio.
+Source snapshots and trial state files are cleaned when the batch ends; results,
+top plays and logs remain available.
+
+Choose **Batch settings — <name>** in the state's Experiment menu, or select the
+experiment in **Experiments → All project experiments… → Batch settings…**, to
+set total trials and 1–8 concurrent workers. These save `Count` and `Parallelism`
+for new batches. To run eight trials simultaneously, set workers to 8 and total
+trials to at least 8. Already-running batches retain their saved settings.
 
 After redoing a section, right-click its replacement state and choose
 **Experiment → Attach existing experiment → <name>**. Studio discovers recipes
@@ -60,21 +72,37 @@ preserves code, parameters, trial counts, custom config properties and old runs.
 The recipe then appears under the new state. Multiple recipes may attach to one
 state; each recipe has one current starting-state binding.
 
-**Experiment → Rename experiment… → <name>** changes the displayed name and
-the name used for future runs. Folder paths, code, parameters, references and
-existing run names remain stable. **Remove experiment → <name>** removes a
-recipe from project menus and clears its green state indication if no other
-experiment is attached. Both menus list every experiment in the project, so
-you can also manage recipes whose old starting state was deleted.
+**Experiment → Rename experiment… → <name>** saves the experiment name in
+`experiment.identity.json`, used in menus, run windows and top plays. Without this
+identity file, the experiment folder name is used. Replacing a run config, including
+its `Name` or legacy `DisplayName` fields, cannot rename the experiment.
+Detached batches retain an identity snapshot; those without one use "Experiment".
+Folder paths, code, parameters, references and existing run snapshots remain stable.
+**Remove experiment from state → <name>** lists only experiments attached to the
+selected state and clears that attachment. The recipe stays in the project and
+in **Attach existing experiment**, retaining its name, code, settings and run history.
+The state's green indication clears only when it has no remaining experiments.
+Detached recipes must be attached to a state before running; removal never changes
+them into power-on experiments. Active batches keep their frozen starting state.
+Rename and Attach existing experiment list every experiment unless explicitly hidden
+or deleted.
 
-Removal retires the configuration in place as
-`experiment.tascsharp.json.removed-<id>`. Code and run history remain in the
-folder, and active batches can finish. To recover the recipe, rename that file
-back to `experiment.tascsharp.json`; reattach it if its state no longer exists.
-No emulator state or source project is deleted by this action.
+**Experiments → All project experiments…** lists every project recipe regardless of
+its state binding, including detached experiments, missing states, broken configs,
+and experiments removed by older versions of Studio. Old removal backups are
+discovered without modifying them; **Restore** recovers their config as detached,
+or **Attach to state** recovers it with a new binding. The old backup is preserved.
+This window also provides access to previous runs and the experiment folder.
+
+Hiding and deleting are separate, explicit actions in that window. **Hide** removes
+an experiment from state menus until **Unhide**. **Delete from project…** confirms a
+recoverable deletion; code, configuration and run history stay on disk. Deleted
+experiments remain in the full list with **Restore**. These flags are saved alongside
+the name in `experiment.identity.json`, so rewriting a batch config cannot change
+them. Neither action changes the state binding or stops an active batch.
 
 Changing or deleting a state does not delete its experiment folder. Reattach the
-recipe to a replacement before rerunning. Existing run snapshots remain usable.
+recipe to a replacement before rerunning. Existing results and top plays remain usable.
 For resume, pass the run's **`batch/` subdirectory** to `resume-csharp`; reattachment
 affects new runs, never an existing batch. Successful trial timeline retention
 is unchanged; see the retention section below.
@@ -159,6 +187,7 @@ native runtime and system resources.
 | Field | Meaning |
 | --- | --- |
 | `Name` | Human-readable batch name |
+| `DisplayName` | Legacy request metadata; not used to name experiments. Use Studio's Rename experiment action or the separate `experiment.identity.json` |
 | `SourceProject` | Saved `.tasproj`; absolute or relative to this config file |
 | `Project` | C# `.csproj`; absolute or relative to this config file |
 | `AssemblyName` | Output DLL's simple name, without `.dll` |
@@ -189,7 +218,7 @@ Different emulator-build/resource provenance, including mixed `RuntimeHistory`,
 is a **warning** at experiment startup. The worker attempts to restore the project
 and attached state and run your code. The warning is logged before the script,
 reported in batch progress when the trial finishes, and retained as
-`CompatibilityWarning` in `results.json` and the SQLite `trials.result_json`
+`CompatibilityWarning` in `results.json.gz` (or older `results.json`) and the SQLite `trials.result_json`
 receipt. It does not populate `Error` or change a completed trial to failed.
 ROM hashes, requested settings, archive integrity, native state decoding and
 recorded-poll desync checks still apply. Resume still checks the frozen batch's
@@ -360,7 +389,7 @@ independent trials through the coordinator instead.
 | `LoadStateAsync(string id)` | Restore a valid worker state/marker |
 | `LoadStateAsync(string id, bool clearLaterInput)` | Optionally clear inputs from the restored group and events after it |
 | `DeleteStateAsync(string id)` | Delete a worker marker and owned state file; unknown/deletion failures throw |
-| `GetStatesAsync()` | Snapshot of IDs, names, groups and validity |
+| `GetStatesAsync()` | Snapshot of IDs, names, groups and validity: the start state plus states this worker saved, not the project's other states |
 | `AddTakeAsync(string name, int startGroup, IEnumerable<ControllerState> inputs)` | Add a worker candidate take without applying it; 1–100000 inputs |
 | `ReadMemoryAsync(uint address, int count)` | Read 1–1048576 guest bytes |
 | `WriteMemoryAsync(uint address, byte[] bytes)` | Write guest bytes and record a worker execution event |
@@ -397,7 +426,8 @@ finally
 
 During cancellation, SDK calls can throw cancellation exceptions; normal coordinator
 cleanup removes committed cancelled/successful worker directories after exit. Failed
-or timed-out trials retain their artifacts for diagnosis, including remaining states.
+or timed-out trials retain logs for diagnosis; their state files and profiles are
+temporary and are removed when the batch ends.
 No worker state operation changes the source project's files.
 
 ## Reusable game libraries and memory access
@@ -582,13 +612,22 @@ starting history and discards incompatible poll timing.
 - Successful and cancelled trial folders are removed **after a successful SQLite
   commit and worker exit**. Successful typed trials do not export full result projects;
   optional top-K play snapshots remain in SQLite.
-- Failed/timed-out trials keep diagnostics, profiles and saved result projects when
-  available. A database write failure also preserves evidence for recovery.
-- The batch keeps its source/compiled snapshots and SQLite database. Full result
-  receipts in SQLite make committed trials independent of result.json files.
+- Each new batch starts in a fresh output directory. At batch exit (completion,
+  cancellation or failure), its temporary source snapshots, trial state files,
+  profiles and exported result projects are removed. This is per batch; another
+  batch's files and the original TAS project are untouched. Studio's extra source
+  snapshot for that run is also removed.
+- Failed/timed-out trials keep their logs and result receipts. SQLite scores,
+  retained top plays and compiled experiment files survive cleanup. References to
+  deleted result projects are cleared in receipts and SQLite.
+- Cleanup skips batches with an active coordinator or worker. A failed database
+  write preserves artifacts for recovery and reports why cleanup was skipped.
 - Cancellation stops scheduling; only in-flight trials finish/cancel. Unstarted
   indices get no placeholder files/rows and remain pending.
-- Resume reuses the exact saved definition and assembly. It skips finished trials
+- Resume is available for interrupted batches whose source snapshots still exist,
+  such as a coordinator crash before cleanup. A batch that has exited normally,
+  including cancellation, is cleaned and requires a new batch to run again.
+  Resume reuses the exact saved definition and assembly. It skips finished trials
   independently of completion order. Interrupted/unstarted trials begin again from
   the configured boot/state start. Finished failures/timeouts are not automatically retried.
 - Source edits do not update a resumed batch. Use a new batch to test changed code,
@@ -597,7 +636,31 @@ starting history and discards incompatible poll timing.
 - One coordinator lock prevents concurrent run/resume/cleanup on the same batch.
 - `clean-csharp <batch>` removes committed success artifacts and legacy synthetic
   cancellation placeholders in a stopped batch. It keeps actual interrupted work
-  and failures. Do not manually delete shared snapshots needed for resume.
+  and failures.
+- `clean-batch <batch> [--dry-run]` applies the full temporary-storage cleanup to an
+  older stopped batch. It keeps results/top plays/logs, but removes source snapshots
+  and therefore disables resume. `--dry-run` reports file count and bytes first.
+- In Studio, **Experiments → Clean experiment storage…** recursively inventories
+  the entire experiments folder, including archived runs, fixtures, standalone
+  experiment projects and detached/deleted recipes. The scan displays an increasing
+  file count and byte total, plus a storage breakdown. **Clean experiments** removes
+  old generated states, temporary worker profiles and BMP screenshots and compresses
+  retained input/poll/take JSON. Main-project references, experiment baselines and
+  current recipe start states are protected. Removed state markers are also removed
+  from experiment manifests. Active runs and unreadable locations are skipped.
+  Cleanup shows progress and bytes freed and supports stopping between files.
+  Results, top plays, logs and experiment code remain; cleaned batches cannot resume.
+- New folder-project input assets use content-addressed `.json.gz` files by default;
+  SHA-256 covers the stored compressed bytes. Existing input conversion verifies
+  each gzip round trip and commits updated timelines/manifests before deleting the
+  original JSON. Compression uses `min(4, max(2, logical CPU count / 2))` workers
+  (integer division); manifest commits and deletion stay sequential.
+  An interrupted conversion leaves loadable projects. Main-project
+  inputs are not converted by experiment cleanup.
+- New `result.json.gz` and `results.json.gz` receipts are compressed by default.
+  Studio, the worker/resume path and the VS Code results tree accept both gzip and
+  older plain JSON. Editable configs and manifests stay plain JSON. Older Studio
+  versions do not understand compressed input assets; use the updated runtime.
 
 For an emulated-time bound, measure Seconds inside your script. TimeoutSeconds is
 the separate wall-clock worker limit, including boot/initialization/preroll. Check

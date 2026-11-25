@@ -69,6 +69,10 @@ public sealed partial class MainWindow
         foreach (var tab in projectTabs) tab.IsEnabled = _execution.IsLoaded && (!Equals(tab.Header, "Checkpoints") || _execution.HasProject);
         var interfaceTab = SettingsTab("Interface", BuildInterfaceSettings(_settings, _settings.Save));
         var timelinePage = SettingsPage();
+        var timingDisplay = new ComboBox { Name = "TimelineTimingDisplay", ItemsSource = new[] { "Multiple Only", "Always", "Never" },
+            SelectedIndex = (int)_settings.TimelineTimingDisplay, HorizontalAlignment = HorizontalAlignment.Stretch };
+        timelinePage.Children.Add(SettingsRow("Timing display", timingDisplay));
+        timelinePage.Children.Add(SettingsNote("Multiple Only: show duration for selections of two or more frame groups (default). Always: include single-group selections. Never: hide selection timing. Saved for all projects on this computer."));
         var timeOffset = new NumericUpDown { Name = "TimelineTimeOffset", Minimum = 0,
             Maximum = (TimeSpan.MaxValue.Ticks / TimeSpan.TicksPerMillisecond) / 1000m,
             Increment = 0.001m, FormatString = "0.000", Value = _execution.TimelineOffsetMilliseconds / 1000m };
@@ -101,6 +105,15 @@ public sealed partial class MainWindow
                     applying = true;
                     apply.IsEnabled = cancel.IsEnabled = tabs.IsEnabled = false;
                     await _execution.SetTimelineOffsetAsync(checked((long)decimal.Round(seconds * 1000, 0, MidpointRounding.AwayFromZero)));
+                    var display = (SelectionTimingDisplay)timingDisplay.SelectedIndex;
+                    if (display != _settings.TimelineTimingDisplay)
+                    {
+                        var previous = _settings.TimelineTimingDisplay;
+                        _settings.TimelineTimingDisplay = display;
+                        try { _settings.Save(); }
+                        catch { _settings.TimelineTimingDisplay = previous; throw; }
+                    }
+                    _timeline.TimingDisplay = _settings.TimelineTimingDisplay;
                     applying = false;
                     dialog.Close(true);
                     return;
@@ -137,7 +150,7 @@ public sealed partial class MainWindow
             footer.IsVisible = apply.IsVisible = !interfaceSelected;
             replay.IsVisible = _execution.HasProject && !timelineSelected;
             apply.Content = timelineSelected ? "Apply timeline settings" : _execution.IsManualPlay ? "Apply & restart Play" : "Apply to project";
-            note.Text = timelineSelected ? "Only the timeline clock changes. No emulator restart or replay."
+            note.Text = timelineSelected ? "Only the timeline display changes. No emulator restart or replay."
                 : _execution.IsManualPlay ? "Apply restarts Play from boot. Save a state first to keep the current position. Memory cards persist."
                 : "Emulation changes restart from boot with a new baseline, preserve inputs/events, and remove existing state markers. Checkpoint settings apply without a restart.";
             cancel.Content = interfaceSelected ? "Close" : "Cancel";

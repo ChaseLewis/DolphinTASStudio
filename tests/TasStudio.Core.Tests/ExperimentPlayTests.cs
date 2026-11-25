@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Diagnostics;
 using System.Security;
 using Avalonia.Controls;
+using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
@@ -142,7 +143,7 @@ public sealed class ExperimentPlayTests
         Assert.Equal(calls, backend.Calls.ToArray()); Assert.Equal(before, source.Inputs);
         Assert.Equal(3UL, source.Position); Assert.True(source.IsPreviewCurrent);
         Assert.Equal(markers, source.StateMarkers); Assert.Equal(hash, await source.HistoryAtAsync(3));
-        var take = Assert.Single(source.Takes); Assert.Equal(play.Name, take.Name); Assert.Equal(4, take.Inputs.Length);
+        var take = Assert.Single(source.Takes); Assert.Equal("Experiment", take.Name); Assert.NotEqual(play.Name, take.Name); Assert.Equal(4, take.Inputs.Length);
         await source.UndoAsync(); Assert.Empty(source.Takes); Assert.Equal(before, source.Inputs);
         await source.RedoAsync(); Assert.Equal(id, Assert.Single(source.Takes).Id);
 
@@ -188,6 +189,30 @@ public sealed class ExperimentPlayTests
         Assert.Equal(2UL, Assert.Single(metadata.Events).Position);
         Assert.Equal(BitConverter.GetBytes(21), metadata.Events[0].Bytes);
         await source.UndoAsync(); Assert.Equal(id, Assert.Single(source.Takes).Id);
+    }
+
+    [Fact]
+    public async Task DifferentWinningTrialsKeepExperimentNameOnTakesAndSectionsAcrossSaveReopen()
+    {
+        using var files = new TestWorkspace(); using var source = new ExecutionService(Backend());
+        await Source(files, source);
+        var baseline = await source.HistoryAtAsync(3);
+        foreach (var trial in new[] { "Trial 7", "Trial 42" })
+        {
+            var play = new ExperimentPlay(0, trial, 12, 3, 1,
+                new ExperimentPlayData(baseline, [ControllerState.Neutral], [], []).Encode()) { ExperimentName = "Boss RNG" };
+            await source.ApplyExperimentPlayAsTakeAsync(play);
+        }
+        Assert.All(source.Takes, take => Assert.Equal("Boss RNG", take.Name));
+        var saved = files.FilePath("named.tasproj"); await source.SaveProjectAsync(saved);
+        await source.LoadProjectAsync(saved, files.Options);
+        Assert.Equal(new[] { "Trial 7", "Trial 42" }, source.Takes.Select(take => take.Experiment!.Name));
+        Assert.All(source.Takes, take => Assert.Equal("Boss RNG", take.Name));
+        Assert.Contains("Trial 42", source.Takes[1].Provenance);
+        var applied = source.Takes[1].Experiment!;
+        await source.ApplyExperimentPlayAsync(applied);
+        Assert.Equal("Boss RNG", Assert.Single(source.Sections).Name);
+        Assert.Equal(ControllerState.Neutral, source.Inputs[3]);
     }
 
     [AvaloniaFact]
@@ -306,6 +331,8 @@ public sealed class ExperimentPlayTests
         var retained = ExperimentPlayResults.Read(files.DirectoryPath);
         Assert.Equal(new[] { 3, higher ? 0 : 2 }, retained.Select(p => p.TrialIndex));
         var loaded = ExperimentPlayResults.Load(files.DirectoryPath, 3, 0);
+        Assert.Equal("Experiment", loaded.DisplayName); Assert.Equal("Play 3", loaded.Name);
+        Assert.All(retained, play => Assert.Equal("Experiment", play.DisplayName));
         Assert.Equal(ControllerState.Neutral, Assert.Single(ExperimentPlayData.Decode(loaded).Inputs));
         using var db = new SqliteConnection($"Data Source={files.FilePath("results.sqlite")};Pooling=False"); db.Open();
         using var query = db.CreateCommand(); query.CommandText = "SELECT COUNT(*) FROM trials";
@@ -405,22 +432,115 @@ public sealed class ExperimentPlayTests
             if (++applied == 2) return Task.FromResult(false);
             if (applied == 3) throw new InvalidDataException("Starting history changed");
             return Task.FromResult(true);
-        });
+        }, "Current experiment");
         try
         {
             window.Show(); window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
             var batches = window.GetVisualDescendants().OfType<ComboBox>().Single();
-            Assert.Equal(nested ? "capture-entry-269-01 / batch" : "capture-entry-269-01", batches.SelectedItem!.ToString());
+            Assert.Equal("Test", batches.SelectedItem!.ToString());
+            Assert.Equal("Current experiment — Top plays", window.Title);
             var list = window.GetVisualDescendants().OfType<ListBox>().Single();
             var use = window.GetVisualDescendants().OfType<Button>().Single(b => b.Name == (asTake ? "ApplyExperimentPlayAsTake" : "ApplyExperimentPlay"));
             for (var i = 0; list.ItemCount == 0 && i < 100; i++) { await Task.Delay(10); Dispatcher.UIThread.RunJobs(); }
             Assert.Equal(1, list.ItemCount); Assert.False(use.IsEnabled);
             list.SelectedIndex = 0; Assert.True(use.IsEnabled);
+            Assert.Equal("Current experiment", Assert.IsType<ExperimentPlaySummary>(list.SelectedItem).DisplayName);
+            if (nested && !asTake && Environment.GetEnvironmentVariable("TASSTUDIO_TEST_CAPTURE_DIR") is { Length: > 0 } output)
+            {
+                Directory.CreateDirectory(output); window.UpdateLayout(); AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+                window.CaptureRenderedFrame()!.Save(Path.Combine(output, "experiment-names.png"));
+            }
             use.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Assert.Equal(1, applied);
             use.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Assert.Equal(2, applied);
             Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "Play was not applied.");
             use.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Assert.Equal(3, applied);
             Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), block => block.Text == "Starting history changed");
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public void BatchPickerUsesBatchNamesAndRefreshSortsNewestFirstWithoutChangingSelection()
+    {
+        using var files = new TestWorkspace();
+        var older = files.FilePath(".runs/z-older");
+        var newer = files.FilePath(".runs/a-newer/batch");
+        var unnamed = files.FilePath(".runs/unnamed-run/batch");
+        var timestamp = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        ExperimentFiles.Write(Path.Combine(older, "experiment.json"), new { Name = "Older batch", DisplayName = "Frozen experiment" });
+        ExperimentFiles.Write(Path.Combine(newer, "experiment.json"), new { Name = "Newer batch", DisplayName = "Frozen experiment" });
+        File.SetLastWriteTimeUtc(Path.Combine(older, "experiment.json"), timestamp);
+        File.SetLastWriteTimeUtc(Path.Combine(newer, "experiment.json"), timestamp.AddHours(1));
+        Directory.CreateDirectory(unnamed); Directory.SetLastWriteTimeUtc(unnamed, timestamp.AddDays(-1));
+        var window = new ExperimentPlaysWindow([older, unnamed, newer], (_, _, _) => Task.FromResult(true), "Current experiment");
+        try
+        {
+            window.Show(); window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            var batches = window.GetVisualDescendants().OfType<ComboBox>().Single();
+            Assert.Equal(new[] { "Newer batch", "Older batch", "unnamed-run" }, batches.Items.Select(item => item!.ToString()));
+            Assert.Equal("Newer batch", batches.SelectedItem!.ToString());
+            Assert.Equal("Current experiment — Top plays", window.Title);
+            batches.SelectedIndex = 1;
+            File.SetLastWriteTimeUtc(Path.Combine(older, "experiment.json"), timestamp.AddDays(1));
+            window.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RefreshPlays")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(new[] { "Older batch", "Newer batch", "unnamed-run" }, batches.Items.Select(item => item!.ToString()));
+            Assert.Equal("Older batch", batches.SelectedItem!.ToString());
+            Assert.Equal(0, batches.SelectedIndex);
+            Assert.Equal("Current experiment — Top plays", window.Title);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public async Task NewBatchCanRefreshAndSelectWithoutRenamingWindowResultsOrImportedPlay()
+    {
+        using var files = new TestWorkspace();
+        var config = files.FilePath(ProjectExperiments.ConfigFileName);
+        ProjectExperiments.WriteDisplayName(files.DirectoryPath, "Encounter search");
+        async Task<string> CompleteBatch(string directory, string name)
+        {
+            var batch = files.FilePath(directory);
+            // Search scripts may replace both fields with a description of the latest run.
+            ExperimentFiles.Write(config, new { Name = name, DisplayName = name });
+            ExperimentFiles.Write(Path.Combine(batch, "request.json"), new { Name = name, DisplayName = name });
+            ExperimentFiles.Write(Path.Combine(batch, "experiment.json"), new ExperimentDefinition(1, name, ExperimentStart.Boot, null, null, 1, 30,
+                [new("Trial", JsonSerializer.SerializeToElement(new { }))]) { TopPlays = new() });
+            await using var writer = new SerializedExperimentWriter(new SqliteExperimentWriter(typeof(ScoreResult), topPlays: new()));
+            await writer.InitializeAsync(new(batch, name, 1), default);
+            await writer.WriteAsync(new("Trial", "completed", null, DateTimeOffset.UtcNow, 1, 1, 1, 1,
+                JsonSerializer.SerializeToElement(new ScoreResult(10)), null, 0)
+            { Plays = [new(0, "Winner", 10, 0, 1, new ExperimentPlayData("baseline", [ControllerState.Neutral], [], []).Encode())] });
+            return batch;
+        }
+        var first = await CompleteBatch(".runs/first", "Initial batch");
+        var applied = false;
+        var window = new ExperimentPlaysWindow(ProjectExperiments.PreviousBatches(config), (batch, play, _) =>
+        {
+            Assert.Equal("Encounter search", play.DisplayName);
+            Assert.Equal("Encounter search", ExperimentPlayResults.Load(batch, play.TrialIndex, play.SubmissionIndex).DisplayName);
+            applied = true; return Task.FromResult(true);
+        }, refreshBatches: () => ProjectExperiments.PreviousBatches(config));
+        try
+        {
+            window.Show(); window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+            var batches = window.GetVisualDescendants().OfType<ComboBox>().Single();
+            var results = window.GetVisualDescendants().OfType<ListBox>().Single();
+            var next = await CompleteBatch(".runs/new/batch", "New winning batch");
+            File.SetLastWriteTimeUtc(Path.Combine(next, "results.sqlite"), DateTime.UtcNow.AddMinutes(1));
+            window.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "RefreshPlays")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(new[] { "New winning batch", "Initial batch" }, batches.Items.Select(item => item!.ToString()));
+            Assert.Equal("Initial batch", batches.SelectedItem!.ToString());
+            batches.SelectedIndex = 0;
+            for (var i = 0; results.ItemCount == 0 && i < 100; i++) { await Task.Delay(10); Dispatcher.UIThread.RunJobs(); }
+            Assert.Equal("Encounter search — Top plays", window.Title);
+            Assert.Equal("Encounter search", Assert.IsType<ExperimentPlaySummary>(Assert.Single(results.Items)).DisplayName);
+            results.SelectedIndex = 0;
+            window.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "ApplyExperimentPlayAsTake")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.True(applied);
+            Assert.Equal("Encounter search", ProjectExperiments.DisplayName(config));
         }
         finally { window.Close(); }
     }

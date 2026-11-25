@@ -31,7 +31,8 @@ public sealed partial class MainWindow
         Opened += (_, _) => _recoveryTimer.Start();
         Closed += (_, _) => { _recoveryTimer.Stop(); CloseRecoveryMarker(); };
     }
-    private async Task BeginRecoverySession()
+    /// <param name="alreadySaved">The session matches a project on disk; the first backup waits for the first change.</param>
+    private async Task BeginRecoverySession(bool alreadySaved = false)
     {
         await _recoveryGate.WaitAsync();
         try
@@ -41,7 +42,8 @@ public sealed partial class MainWindow
             Directory.CreateDirectory(Path.GetDirectoryName(_recoveryPath)!);
             _recoveryMarker = new FileStream(Path.Combine(Path.GetDirectoryName(_recoveryPath)!, "session.open"), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
             _recoveryMarker.Flush(true);
-            await SaveRecoveryCore();
+            if (alreadySaved) { _recoveryRevision = _execution.Revision; RefreshRecoveryStatus(); }
+            else await SaveRecoveryCore();
         }
         finally { _recoveryGate.Release(); }
     }
@@ -59,6 +61,7 @@ public sealed partial class MainWindow
     }
     private async Task SaveRecoveryCore()
     {
+        if (_execution.IsTakingOver) return;
         try { await FlushInputEditsAsync(); }
         catch (Exception ex) { _recoveryFailure = ex.Message; RefreshRecoveryStatus(); return; }
         if (_recoveryWrite != null) await _recoveryWrite;
@@ -82,7 +85,8 @@ public sealed partial class MainWindow
     private void RefreshRecoveryStatus()
     {
         _recoveryStatus.Text = !_execution.HasProject ? "" : _recoveryFailure != null ? "Recovery backup failed: " + _recoveryFailure :
-            _recoverySaved is { } saved ? $"Recovery saved {saved:HH:mm:ss} · every 5 seconds" : "Preparing recovery backup…";
+            _recoverySaved is { } saved ? $"Recovery saved {saved:HH:mm:ss} · every 5 seconds" :
+            _execution.Revision == _recoveryRevision ? "No changes since opening · recovery backup starts with the first change" : "Preparing recovery backup…";
         ToolTip.SetTip(_projectStatus, _recoveryStatus.Text);
         if (_recoveryFailure != null) _status.Text = _recoveryStatus.Text;
     }
@@ -102,23 +106,30 @@ public sealed partial class MainWindow
         }
         return entries.ToArray();
     }
+    internal static bool HasUncleanRecovery(string root)
+    {
+        if (!Directory.Exists(root)) return false;
+        // Sessions are direct children. Do not walk their state/input asset trees
+        // or deserialize every old manifest just to decide whether to offer recovery.
+        foreach (var directory in Directory.EnumerateDirectories(root))
+        {
+            var marker = Path.Combine(directory, "session.open");
+            if (!File.Exists(marker) || !File.Exists(Path.Combine(directory, "recovery.tasproj"))) continue;
+            try { using var file = new FileStream(marker, FileMode.Open, FileAccess.Read, FileShare.None); return true; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        return false;
+    }
     private async Task OfferRecovery()
     {
-        bool Unclean(string path)
-        {
-            var marker = Path.Combine(Path.GetDirectoryName(path)!, "session.open");
-            if (!File.Exists(marker)) return false;
-            try { using var file = new FileStream(marker, FileMode.Open, FileAccess.Read, FileShare.None); return true; }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
-        }
-        if (!RecoveryEntries().Any(e => Unclean(e.Path))) return;
+        if (!await Task.Run(() => HasUncleanRecovery(RecoveryRoot)) || _closingApproved) return;
         if (await Choice("Input recovery available", "Local input backups are available. Review them to recover a timeline, or continue normally.", "Review backups", "Continue") == "Review backups")
             await RecoverInputs();
     }
     private async Task RecoverInputs()
     {
         await _execution.PauseAsync(); _audio.Flush();
-        var entries = RecoveryEntries();
+        var entries = await Task.Run(RecoveryEntries);
         if (entries.Length == 0) { await ShowMessage("Recover inputs", "No input recovery backups have been saved yet."); return; }
         var dialog = new Window { Title = "Recover inputs", Width = 650, Height = 440, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var list = new ListBox { ItemsSource = entries.Select(e => e.Label).ToArray(), SelectedIndex = 0 };

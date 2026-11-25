@@ -14,6 +14,8 @@ public sealed partial class ExecutionService
         DolphinMovieExportMode mode = DolphinMovieExportMode.Full) => Enqueue(() =>
     {
         RequireProject(); Pause();
+        if (_options!.Configuration?.UseGciFolder == true)
+            throw new NotSupportedException("Dolphin movie export currently requires a raw memory card project.");
         if (_projectStart?.Kind != ProjectStartKind.PowerOn)
             throw new InvalidOperationException("Dolphin movie export requires a power-on project.");
         if (_events.Count != 0)
@@ -38,7 +40,7 @@ public sealed partial class ExecutionService
         try
         {
             // Read the original boot boundary, including the disc header copied to MEM1 by Dolphin.
-            _backend.Restore(_initial!);
+            RestoreBackend(_initial!);
             _executedHistory = _history!.At(0);
             var ticks = _backend.EmulatedTicks ?? throw new NotSupportedException("The backend cannot report exact movie timing.");
             var header = _backend.ReadMemory(0x80000000, 32);
@@ -79,7 +81,7 @@ public sealed partial class ExecutionService
             Report(DolphinMovieExportStage.Restoring);
             _suppressMedia = false;
             _executedHistory = null;
-            _backend.Restore(snapshot);
+            RestoreBackend(snapshot);
             _executedHistory = executedHistory;
             Publish();
         }
